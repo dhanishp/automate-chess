@@ -1241,6 +1241,10 @@ select {
   gap: 0.7rem;
 }
 
+.multiplayer-room-row {
+  align-items: center;
+}
+
 .choice-pill {
   border: 1px solid var(--border-strong);
   background: var(--surface-raised);
@@ -1269,6 +1273,30 @@ select {
   min-width: 220px;
 }
 
+.room-code-input {
+  min-height: 44px;
+  min-width: 132px;
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text);
+  padding: 0 14px;
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.room-code-input::placeholder {
+  color: var(--muted);
+  letter-spacing: 0.12em;
+}
+
+.room-code-input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline-offset: 2px;
+}
+
 :root[data-theme='light'] .choice-pill {
   background: color-mix(in srgb, white 88%, var(--surface-raised));
 }
@@ -1276,6 +1304,10 @@ select {
 :root[data-theme='light'] .choice-pill.selected {
   background: color-mix(in srgb, var(--accent) 11%, white);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border-strong));
+}
+
+:root[data-theme='light'] .room-code-input {
+  background: color-mix(in srgb, white 90%, var(--surface-raised));
 }
 
 @media (max-width: 1100px) {

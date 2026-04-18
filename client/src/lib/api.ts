@@ -1,12 +1,13 @@
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000'
 
 export type Side = 'white' | 'black'
-export type GameMode = 'local' | 'bot'
+export type GameMode = 'local' | 'bot' | 'multiplayer'
 export type HumanSideChoice = 'white' | 'black' | 'random'
 export type Phase = 'setup' | 'ready_for_autoplay' | 'autoplay' | 'results'
 export type ActionType = 'place_piece' | 'finish_setup' | 'place_king'
 export type PieceType = 'P' | 'N' | 'B' | 'R' | 'Q' | 'K'
 export type AutoplayStatus = 'not_ready' | 'running' | 'ready' | 'failed'
+export type RoomStatus = 'waiting' | 'active' | 'complete'
 
 export interface PlacedPiece {
   type: PieceType
@@ -70,6 +71,35 @@ export interface ApiResponse {
   game: GameState
 }
 
+export interface RoomPlayerState {
+  side: Side
+  player_token: string
+  connected: boolean
+}
+
+export interface RoomState {
+  room_code: string
+  status: RoomStatus
+  game: GameState
+  white_player: RoomPlayerState
+  black_player: RoomPlayerState | null
+}
+
+export interface RoomResponse {
+  ok: boolean
+  message: string | null
+  room: RoomState
+  player_token: string
+  player_side: Side
+}
+
+export interface RoomEvent {
+  type: 'snapshot' | 'room_closed'
+  room?: RoomState | null
+  room_code?: string | null
+  message?: string | null
+}
+
 export interface CreateSoloGameRequest {
   white_name?: string
   black_name?: string
@@ -83,11 +113,29 @@ export interface CreateSampleGameRequest {
   human_side?: HumanSideChoice
 }
 
+export interface CreateRoomRequest {
+  white_name?: string
+  black_name?: string
+}
+
+export interface JoinRoomRequest {
+  room_code: string
+}
+
+export interface LeaveRoomRequest {
+  player_token: string
+}
+
 export interface ActionRequest {
   action_type: ActionType
   side: Side
   piece_type?: PieceType
   square?: string
+}
+
+export interface RoomActionRequest {
+  player_token: string
+  action: ActionRequest
 }
 
 export class ApiError extends Error {
@@ -187,6 +235,45 @@ export function applyAction(gameId: string, payload: ActionRequest): Promise<Api
   })
 }
 
+export function createRoom(payload: CreateRoomRequest = {}): Promise<RoomResponse> {
+  return request<RoomResponse>('/rooms', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function joinRoom(payload: JoinRoomRequest): Promise<RoomResponse> {
+  return request<RoomResponse>('/rooms/join', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getRoom(roomCode: string, playerToken: string): Promise<RoomResponse> {
+  const search = new URLSearchParams({ player_token: playerToken })
+  return request<RoomResponse>(`/rooms/${roomCode}?${search.toString()}`)
+}
+
+export function applyRoomAction(roomCode: string, payload: RoomActionRequest): Promise<RoomResponse> {
+  return request<RoomResponse>(`/rooms/${roomCode}/actions`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function leaveRoom(roomCode: string, payload: LeaveRoomRequest): Promise<{ status: string }> {
+  return request<{ status: string }>(`/rooms/${roomCode}/leave`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getApiBaseUrl(): string {
   return apiBaseUrl
+}
+
+export function getWebSocketUrl(path: string): string {
+  const url = new URL(path, apiBaseUrl)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
 }

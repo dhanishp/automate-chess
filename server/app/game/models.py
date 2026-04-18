@@ -26,6 +26,7 @@ class Phase(str, Enum):
 class GameMode(str, Enum):
     LOCAL = "local"
     BOT = "bot"
+    MULTIPLAYER = "multiplayer"
 
 
 class HumanSideChoice(str, Enum):
@@ -162,6 +163,59 @@ class ApiResponse(BaseModel):
     ok: bool = True
     message: str | None = None
     game: GameState
+
+
+class RoomStatus(str, Enum):
+    WAITING = "waiting"
+    ACTIVE = "active"
+    COMPLETE = "complete"
+
+
+class RoomPlayerState(BaseModel):
+    side: Side
+    player_token: str
+    connected: bool = False
+
+
+class RoomState(BaseModel):
+    room_code: str
+    status: RoomStatus
+    game: GameState
+    white_player: RoomPlayerState
+    black_player: RoomPlayerState | None = None
+
+
+class CreateRoomRequest(BaseModel):
+    white_name: str = "White"
+    black_name: str = "Black"
+
+
+class JoinRoomRequest(BaseModel):
+    room_code: str
+
+
+class LeaveRoomRequest(BaseModel):
+    player_token: str
+
+
+class RoomActionRequest(BaseModel):
+    player_token: str
+    action: ActionRequest
+
+
+class RoomResponse(BaseModel):
+    ok: bool = True
+    message: str | None = None
+    room: RoomState
+    player_token: str
+    player_side: Side
+
+
+class RoomEvent(BaseModel):
+    type: Literal["snapshot", "room_closed"]
+    room: RoomState | None = None
+    room_code: str | None = None
+    message: str | None = None
 
 
 class ReplayMove(BaseModel):

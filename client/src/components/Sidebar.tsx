@@ -1,4 +1,4 @@
-import type { GameState, PieceType, Side } from '../lib/api'
+import type { GameState, PieceType, RoomStatus, Side } from '../lib/api'
 import { PieceGlyph } from './PieceGlyph'
 
 const PIECE_LABELS: Record<PieceType, string> = {
@@ -19,6 +19,9 @@ interface SidebarProps {
   isKingPlacementMode: boolean
   isSetupActive: boolean
   isBotGame: boolean
+  isMultiplayer: boolean
+  roomCode: string | null
+  roomStatus: RoomStatus | null
   humanSideLabel: string | null
   isHumanSetupTurn: boolean
   errorMessage: string | null
@@ -136,6 +139,9 @@ export function Sidebar({
   isKingPlacementMode,
   isSetupActive,
   isBotGame,
+  isMultiplayer,
+  roomCode,
+  roomStatus,
   humanSideLabel,
   isHumanSetupTurn,
   errorMessage,
@@ -153,10 +159,16 @@ export function Sidebar({
   statusTone,
 }: SidebarProps) {
   const activePlayer = game[game.setup_turn]
-  const canInteract = isSetupActive && pendingActionLabel === null && (!isBotGame || isHumanSetupTurn)
+  const canInteract = isSetupActive && pendingActionLabel === null && (!isBotGame || isHumanSetupTurn) && (!isMultiplayer || roomStatus === 'active')
   const activeSideLabel = formatSide(game.setup_turn)
   const isLivePhase = isSetupActive
-  const turnSummary = isBotGame
+  const turnSummary = isMultiplayer
+    ? roomStatus === 'waiting'
+      ? 'Waiting for opponent'
+      : isHumanSetupTurn
+        ? `Your turn as ${activeSideLabel}`
+        : `Opponent is placing for ${activeSideLabel}`
+    : isBotGame
     ? isHumanSetupTurn
       ? `Your turn as ${activeSideLabel}`
       : `Easy bot is placing for ${activeSideLabel}`
@@ -192,7 +204,7 @@ export function Sidebar({
             <span>Selected</span>
             <strong>{selectedPieceLabel}</strong>
           </div>
-          {isBotGame ? (
+          {(isBotGame || isMultiplayer) ? (
             <div className="metric-card">
               <span>You</span>
               <strong>{humanSideLabel ?? 'Random'}</strong>
@@ -202,6 +214,18 @@ export function Sidebar({
             <div className="metric-card">
               <span>Mode</span>
               <strong>Solo vs Bot</strong>
+            </div>
+          ) : null}
+          {isMultiplayer ? (
+            <div className="metric-card">
+              <span>Mode</span>
+              <strong>Room Match</strong>
+            </div>
+          ) : null}
+          {isMultiplayer ? (
+            <div className="metric-card">
+              <span>Room</span>
+              <strong>{roomCode ?? '—'}</strong>
             </div>
           ) : null}
           <div className="metric-card">
@@ -227,7 +251,11 @@ export function Sidebar({
           </div>
         </div>
         <p className="panel-copy">
-          {isBotGame && !isHumanSetupTurn
+          {isMultiplayer && roomStatus === 'waiting'
+            ? 'Share the room code with your opponent. Setup will unlock automatically as soon as Black joins.'
+            : isMultiplayer && !isHumanSetupTurn
+              ? `Your opponent is acting for ${activeSideLabel.toLowerCase()}. The board will unlock when your turn starts.`
+            : isBotGame && !isHumanSetupTurn
             ? `The bot is acting for ${activeSideLabel.toLowerCase()}. Piece selection will unlock again when your next setup turn starts.`
             : `Select a piece, then click a square on the board. Shop previews currently show the ${activeSideLabel.toLowerCase()} side.`}
         </p>
@@ -346,7 +374,7 @@ export function Sidebar({
               type="button"
               className="button ghost secondary-utility-button"
               onClick={onLoadSample}
-              disabled={!canInteract}
+              disabled={!canInteract || isMultiplayer}
             >
               Load sample setup
             </button>
@@ -368,6 +396,12 @@ export function Sidebar({
           </>
         )}
 
+        {isMultiplayer && isSetupActive && roomStatus === 'waiting' && !pendingActionLabel ? (
+          <p className="status-message">Waiting for Black to join this room. Share the room code to begin live setup.</p>
+        ) : null}
+        {isMultiplayer && isSetupActive && roomStatus === 'active' && !isHumanSetupTurn && !pendingActionLabel ? (
+          <p className="status-message">Your opponent is taking their setup turn. Live updates will appear automatically.</p>
+        ) : null}
         {isBotGame && isSetupActive && !isHumanSetupTurn && !pendingActionLabel ? (
           <p className="status-message">Easy bot is taking its setup turn. Human controls will unlock automatically after the bot responds.</p>
         ) : null}

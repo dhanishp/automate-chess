@@ -6,18 +6,30 @@ import { Sidebar } from '../components/Sidebar'
 import {
   ApiError,
   applyAction,
+  applyRoomAction,
+  createRoom,
   createSampleGame,
   createSoloGame,
+  getApiBaseUrl,
   getGame,
+  getRoom,
+  getWebSocketUrl,
+  joinRoom,
+  leaveRoom,
   type GameMode,
   type GameState,
   type HumanSideChoice,
   type PieceType,
+  type RoomEvent,
+  type RoomResponse,
+  type RoomState,
+  type RoomStatus,
   type Side,
 } from '../lib/api'
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const
 const SESSION_STORAGE_GAME_KEY = 'automate-chess-game-id'
+const ROOM_SESSION_STORAGE_KEY = 'automate-chess-room-session'
 const THEME_STORAGE_KEY = 'automate-chess-theme'
 const BOT_THINK_DELAY_MS = 700
 const PIECE_LABELS: Record<PieceType, string> = {
@@ -29,22 +41,71 @@ const PIECE_LABELS: Record<PieceType, string> = {
   K: 'King',
 }
 
-let bootstrapPromise: Promise<GameState | null> | null = null
+interface RoomSession {
+  roomCode: string
+  playerToken: string
+  playerSide: Side
+}
 
-function getInitialGame(): Promise<GameState | null> {
+interface BootstrapState {
+  game: GameState | null
+  room: RoomState | null
+  roomSession: RoomSession | null
+}
+
+let bootstrapPromise: Promise<BootstrapState> | null = null
+
+function getStoredRoomSession(): RoomSession | null {
+  const raw = window.sessionStorage.getItem(ROOM_SESSION_STORAGE_KEY)
+  if (!raw) {
+    return null
+  }
+
+  try {
+    return JSON.parse(raw) as RoomSession
+  } catch {
+    window.sessionStorage.removeItem(ROOM_SESSION_STORAGE_KEY)
+    return null
+  }
+}
+
+function setStoredRoomSession(session: RoomSession | null) {
+  if (!session) {
+    window.sessionStorage.removeItem(ROOM_SESSION_STORAGE_KEY)
+    return
+  }
+
+  window.sessionStorage.setItem(ROOM_SESSION_STORAGE_KEY, JSON.stringify(session))
+}
+
+function getInitialGame(): Promise<BootstrapState> {
   if (!bootstrapPromise) {
     bootstrapPromise = (async () => {
+      const storedRoomSession = getStoredRoomSession()
+      if (storedRoomSession) {
+        try {
+          const response = await getRoom(storedRoomSession.roomCode, storedRoomSession.playerToken)
+          return {
+            game: response.room.game,
+            room: response.room,
+            roomSession: storedRoomSession,
+          }
+        } catch {
+          window.sessionStorage.removeItem(ROOM_SESSION_STORAGE_KEY)
+        }
+      }
+
       const existingGameId = window.sessionStorage.getItem(SESSION_STORAGE_GAME_KEY)
 
       if (existingGameId) {
         try {
           const response = await getGame(existingGameId)
-          return response.game
+          return { game: response.game, room: null, roomSession: null }
         } catch {
           window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
         }
       }
-      return null
+      return { game: null, room: null, roomSession: null }
     })().finally(() => {
       bootstrapPromise = null
     })
@@ -111,7 +172,13 @@ function formatReplayResult(result: string | null | undefined): string {
 }
 
 function formatModeLabel(mode: GameMode): string {
-  return mode === 'bot' ? 'Solo vs Bot' : 'Solo Sandbox'
+  if (mode === 'bot') {
+    return 'Solo vs Bot'
+  }
+  if (mode === 'multiplayer') {
+    return 'Multiplayer Room'
+  }
+  return 'Solo Sandbox'
 }
 
 function delay(ms: number): Promise<void> {
@@ -183,6 +250,10 @@ export function App() {
   const [game, setGame] = useState<GameState | null>(null)
   const [gameSetupMode, setGameSetupMode] = useState<GameMode>('local')
   const [humanSideChoice, setHumanSideChoice] = useState<HumanSideChoice>('white')
+  const [joinRoomCode, setJoinRoomCode] = useState('')
+  const [roomState, setRoomState] = useState<RoomState | null>(null)
+  const [roomSession, setRoomSession] = useState<RoomSession | null>(null)
+  const [roomConnectionState, setRoomConnectionState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected')
   const [selectedPiece, setSelectedPiece] = useState<PieceType | null>('P')
   const [isKingPlacementMode, setIsKingPlacementMode] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -203,10 +274,12 @@ export function App() {
 
     async function bootstrap() {
       try {
-        const initialGame = await getInitialGame()
+        const initialState = await getInitialGame()
 
         if (!cancelled) {
-          setGame(initialGame)
+          setGame(initialState.game)
+          setRoomState(initialState.room)
+          setRoomSession(initialState.roomSession)
           setErrorMessage(null)
           setLoadingMessage('')
         }
@@ -250,8 +323,58 @@ export function App() {
     }
   }, [game, isKingPlacementMode])
 
+  useEffect(() => {
+    if (!roomSession) {
+      setRoomConnectionState('disconnected')
+      return
+    }
+
+    const url = new URL(
+      getWebSocketUrl(`/rooms/${roomSession.roomCode}/ws`),
+    )
+    url.searchParams.set('player_token', roomSession.playerToken)
+
+    setRoomConnectionState('connecting')
+    const socket = new WebSocket(url.toString())
+
+    socket.onopen = () => {
+      setRoomConnectionState('connected')
+    }
+
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data) as RoomEvent
+      if (message.type === 'snapshot' && message.room) {
+        setRoomState(message.room)
+        setGame(message.room.game)
+        return
+      }
+
+      if (message.type === 'room_closed') {
+        setErrorMessage(message.message ?? 'This room was closed.')
+        setStoredRoomSession(null)
+        setRoomSession(null)
+        setRoomState(null)
+        setGame(null)
+        setRoomConnectionState('disconnected')
+      }
+    }
+
+    socket.onclose = () => {
+      setRoomConnectionState('disconnected')
+    }
+
+    return () => {
+      socket.close()
+    }
+  }, [roomSession])
+
   const isBotGame = game?.mode === 'bot'
-  const isHumanSetupTurn = !!game && (!isBotGame || game.human_side === game.setup_turn)
+  const isMultiplayer = game?.mode === 'multiplayer' && !!roomState && !!roomSession
+  const isHumanSetupTurn = !!game && (
+    isMultiplayer
+      ? roomSession?.playerSide === game.setup_turn && roomState?.status === 'active'
+      : !isBotGame || game.human_side === game.setup_turn
+  )
 
   async function refreshGame() {
     if (!game || actionInFlightRef.current) {
@@ -263,8 +386,14 @@ export function App() {
     setErrorMessage(null)
 
     try {
-      const response = await getGame(game.game_id)
-      setGame(response.game)
+      if (roomSession && roomState) {
+        const response = await getRoom(roomState.room_code, roomSession.playerToken)
+        setRoomState(response.room)
+        setGame(response.room.game)
+      } else {
+        const response = await getGame(game.game_id)
+        setGame(response.game)
+      }
     } catch (error) {
       setErrorMessage(getErrorMessage(error))
     } finally {
@@ -273,12 +402,25 @@ export function App() {
     }
   }
 
-  function backToMenu() {
+  async function backToMenu() {
+    if (roomSession) {
+      try {
+        await leaveRoom(roomSession.roomCode, { player_token: roomSession.playerToken })
+      } catch {
+        // Best-effort cleanup for v1.
+      }
+    }
+
     actionInFlightRef.current = false
     window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+    setStoredRoomSession(null)
     setGame(null)
+    setRoomState(null)
+    setRoomSession(null)
+    setRoomConnectionState('disconnected')
     setGameSetupMode('local')
     setHumanSideChoice('white')
+    setJoinRoomCode('')
     setSelectedPiece('P')
     setIsKingPlacementMode(false)
     setErrorMessage(null)
@@ -290,6 +432,11 @@ export function App() {
 
   async function startNewGame(mode: GameMode = 'local', sideChoice: HumanSideChoice = 'white') {
     actionInFlightRef.current = false
+    setStoredRoomSession(null)
+    setRoomState(null)
+    setRoomSession(null)
+    setRoomConnectionState('disconnected')
+    window.sessionStorage.removeItem(ROOM_SESSION_STORAGE_KEY)
     setLoadingMessage(mode === 'bot' ? 'Creating solo vs bot game...' : 'Creating solo game...')
     setPendingActionLabel(null)
     setErrorMessage(null)
@@ -315,7 +462,78 @@ export function App() {
     }
   }
 
+  async function handleCreateRoom() {
+    actionInFlightRef.current = false
+    window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+    setLoadingMessage('Creating multiplayer room...')
+    setPendingActionLabel(null)
+    setErrorMessage(null)
+    setIsKingPlacementMode(false)
+    setSelectedPiece('P')
+    setIsCalculatingAutoplay(false)
+    setReplayFinished(false)
+
+    try {
+      const response = await createRoom()
+      const session: RoomSession = {
+        roomCode: response.room.room_code,
+        playerToken: response.player_token,
+        playerSide: response.player_side,
+      }
+      setStoredRoomSession(session)
+      window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+      setRoomSession(session)
+      setRoomState(response.room)
+      setGame(response.room.game)
+      setLoadingMessage('')
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error))
+      setLoadingMessage('')
+    }
+  }
+
+  async function handleJoinRoom() {
+    const normalizedRoomCode = joinRoomCode.trim().toUpperCase()
+    if (!normalizedRoomCode) {
+      setErrorMessage('Enter a room code first.')
+      return
+    }
+
+    actionInFlightRef.current = false
+    window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+    setLoadingMessage(`Joining room ${normalizedRoomCode}...`)
+    setPendingActionLabel(null)
+    setErrorMessage(null)
+    setIsKingPlacementMode(false)
+    setSelectedPiece('P')
+    setIsCalculatingAutoplay(false)
+    setReplayFinished(false)
+
+    try {
+      const response = await joinRoom({ room_code: normalizedRoomCode })
+      const session: RoomSession = {
+        roomCode: response.room.room_code,
+        playerToken: response.player_token,
+        playerSide: response.player_side,
+      }
+      setStoredRoomSession(session)
+      window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+      setRoomSession(session)
+      setRoomState(response.room)
+      setGame(response.room.game)
+      setLoadingMessage('')
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error))
+      setLoadingMessage('')
+    }
+  }
+
   async function loadSampleGame() {
+    if (isMultiplayer) {
+      setErrorMessage('Sample setup is not available in multiplayer rooms.')
+      return
+    }
+
     actionInFlightRef.current = false
     setLoadingMessage('Loading sample setup...')
     setPendingActionLabel('Loading sample setup...')
@@ -362,14 +580,23 @@ export function App() {
     setIsCalculatingAutoplay(triggersAutoplay)
 
     try {
-      const response = await (
-        isBotGame
-          ? Promise.all([applyAction(game.game_id, payload), delay(BOT_THINK_DELAY_MS)]).then(
-              ([apiResponse]) => apiResponse,
-            )
-          : applyAction(game.game_id, payload)
-      )
-      setGame(response.game)
+      if (isMultiplayer && roomSession && roomState) {
+        const response = await applyRoomAction(roomState.room_code, {
+          player_token: roomSession.playerToken,
+          action: payload,
+        })
+        setRoomState(response.room)
+        setGame(response.room.game)
+      } else {
+        const response = await (
+          isBotGame
+            ? Promise.all([applyAction(game.game_id, payload), delay(BOT_THINK_DELAY_MS)]).then(
+                ([apiResponse]) => apiResponse,
+              )
+            : applyAction(game.game_id, payload)
+        )
+        setGame(response.game)
+      }
       setIsKingPlacementMode(false)
     } catch (error) {
       setErrorMessage(getErrorMessage(error))
@@ -455,7 +682,7 @@ export function App() {
             <p className="eyebrow">New Challenge</p>
             <h1>Automate Chess</h1>
             <p className="launcher-copy">
-              Choose a local sandbox or a solo-vs-bot setup game. The bot handles only setup turns; finished positions still resolve through the existing autoplay replay.
+              Choose a local sandbox, a solo-vs-bot setup game, or a private room match. Finished positions still resolve through the existing autoplay replay.
             </p>
           </div>
 
@@ -473,12 +700,19 @@ export function App() {
                   >
                     Solo Sandbox
                   </button>
+                    <button
+                      type="button"
+                      className={`choice-pill ${gameSetupMode === 'bot' ? 'selected' : ''}`}
+                      onClick={() => setGameSetupMode('bot')}
+                    >
+                      Solo vs Bot
+                    </button>
                   <button
                     type="button"
-                    className={`choice-pill ${gameSetupMode === 'bot' ? 'selected' : ''}`}
-                    onClick={() => setGameSetupMode('bot')}
+                    className={`choice-pill ${gameSetupMode === 'multiplayer' ? 'selected' : ''}`}
+                    onClick={() => setGameSetupMode('multiplayer')}
                   >
-                    Solo vs Bot
+                    Multiplayer Room
                   </button>
                 </div>
               </div>
@@ -501,15 +735,51 @@ export function App() {
                 </div>
               ) : null}
 
-              <button
-                type="button"
-                className="button primary launcher-start-button"
-                onClick={() => {
-                  void startNewGame(gameSetupMode, humanSideChoice)
-                }}
-              >
-                Start {formatModeLabel(gameSetupMode)}
-              </button>
+              {gameSetupMode === 'multiplayer' ? (
+                <div className="launcher-group">
+                  <span className="launcher-label">Room Access</span>
+                  <div className="launcher-choice-row multiplayer-room-row">
+                    <button
+                      type="button"
+                      className="button primary compact-action"
+                      onClick={() => {
+                        void handleCreateRoom()
+                      }}
+                    >
+                      Create Room
+                    </button>
+                    <input
+                      type="text"
+                      className="room-code-input"
+                      value={joinRoomCode}
+                      onChange={(event) => setJoinRoomCode(event.target.value.toUpperCase())}
+                      placeholder="Enter code"
+                      maxLength={6}
+                    />
+                    <button
+                      type="button"
+                      className="button ghost compact-action"
+                      onClick={() => {
+                        void handleJoinRoom()
+                      }}
+                    >
+                      Join Room
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {gameSetupMode !== 'multiplayer' ? (
+                <button
+                  type="button"
+                  className="button primary launcher-start-button"
+                  onClick={() => {
+                    void startNewGame(gameSetupMode, humanSideChoice)
+                  }}
+                >
+                  Start {formatModeLabel(gameSetupMode)}
+                </button>
+              ) : null}
             </div>
           )}
 
@@ -528,16 +798,22 @@ export function App() {
 
   const isSetupActive = game.phase === 'setup'
   const botTurnActive = isSetupActive && isBotGame && !isHumanSetupTurn
+  const multiplayerWaiting = isMultiplayer && roomState?.status === 'waiting'
+  const multiplayerSideLabel = roomSession?.playerSide ? roomSession.playerSide[0].toUpperCase() + roomSession.playerSide.slice(1) : null
   const selectedModeLabel = !isSetupActive
     ? game.phase === 'ready_for_autoplay'
       ? 'Setup complete'
       : botTurnActive
         ? 'Bot is choosing a setup move'
+      : multiplayerWaiting
+        ? 'Waiting for opponent to join'
       : formatPhaseLabel(game.phase)
     : isKingPlacementMode
       ? `King placement for ${game.setup_turn}`
       : botTurnActive
         ? `${game.bot_side} bot to move`
+      : multiplayerWaiting
+        ? 'Waiting for opponent to join'
       : selectedPiece
         ? `${game.setup_turn} placing ${PIECE_LABELS[selectedPiece]}`
         : 'Select a piece'
@@ -554,7 +830,12 @@ export function App() {
   const autoplayPhase = game.phase === 'autoplay'
   const phaseBadge = readyForAutoplay ? 'Setup Complete' : formatPhaseLabel(game.phase)
   const headerTone = getHeaderTone(game)
-  const humanSideLabel = game.human_side ? game.human_side[0].toUpperCase() + game.human_side.slice(1) : null
+  const headerSecondaryPill = isMultiplayer && roomState ? `Room ${roomState.room_code}` : undefined
+  const humanSideLabel = isMultiplayer
+    ? multiplayerSideLabel
+    : game.human_side
+      ? game.human_side[0].toUpperCase() + game.human_side.slice(1)
+      : null
 
   if (autoplayReady) {
     const outcomeLabel = replayFinished ? formatReplayResult(game.autoplay.result ?? game.result) : 'Pending Result'
@@ -563,6 +844,7 @@ export function App() {
       <div className="shell">
         <AppHeader
           primaryPill={outcomeLabel}
+          secondaryPill={headerSecondaryPill}
           tone={replayFinished ? 'complete' : 'autoplay'}
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -573,9 +855,15 @@ export function App() {
             void refreshGame()
           }}
           onNewGame={() => {
+            if (isMultiplayer) {
+              void backToMenu()
+              return
+            }
             void startNewGame(game.mode, game.human_side ?? 'white')
           }}
-          onBackToMenu={backToMenu}
+          onBackToMenu={() => {
+            void backToMenu()
+          }}
           outcomeKnown={replayFinished}
           onOutcomeReveal={() => setReplayFinished(true)}
         />
@@ -588,6 +876,7 @@ export function App() {
       <div className="shell">
         <AppHeader
           primaryPill="Calculating"
+          secondaryPill={headerSecondaryPill}
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -669,7 +958,9 @@ export function App() {
 
               {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
               {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
-              <button type="button" className="button ghost secondary-utility-button" onClick={backToMenu}>
+              <button type="button" className="button ghost secondary-utility-button" onClick={() => {
+                void backToMenu()
+              }}>
                 Back to menu
               </button>
             </section>
@@ -696,6 +987,7 @@ export function App() {
       <div className="shell">
         <AppHeader
           primaryPill={game.autoplay.status}
+          secondaryPill={headerSecondaryPill}
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -738,7 +1030,9 @@ export function App() {
                       >
                         Refresh replay state
                       </button>
-                      <button type="button" className="button ghost" onClick={backToMenu}>
+                      <button type="button" className="button ghost" onClick={() => {
+                        void backToMenu()
+                      }}>
                         Back to menu
                       </button>
                     </section>
@@ -756,6 +1050,7 @@ export function App() {
     <div className="shell">
       <AppHeader
         primaryPill={phaseBadge}
+        secondaryPill={headerSecondaryPill}
         tone={headerTone}
         theme={theme}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -802,6 +1097,9 @@ export function App() {
           selectedPieceLabel={selectedPieceLabel}
           isKingPlacementMode={isKingPlacementMode}
           isSetupActive={isSetupActive}
+          isMultiplayer={isMultiplayer}
+          roomCode={roomState?.room_code ?? null}
+          roomStatus={roomState?.status ?? null}
           errorMessage={errorMessage}
           blockingMessage={activePlayerStatus.blockingMessage}
           pendingActionLabel={pendingActionLabel}
@@ -822,7 +1120,9 @@ export function App() {
           onLoadSample={() => {
             void loadSampleGame()
           }}
-          onBackToMenu={backToMenu}
+          onBackToMenu={() => {
+            void backToMenu()
+          }}
           statusTone={headerTone}
         />
       </main>

@@ -5,84 +5,90 @@ This repo is a browser-based Automate-style chess variant.
 
 Current state:
 - local 2-player setup mode works
-- setup rules and autoplay/replay flow work
-- UI is in a good state
-- next milestone is solo bot setup mode
+- solo sandbox works
+- solo-vs-bot setup mode works
+- autoplay/replay flow works
+- sample setup exists
+- current UI/layout direction is established
 
 ## Current objective
-Implement solo-vs-bot mode for setup only.
+Implement room-code multiplayer v1.
 
-The human should be able to choose White, Black, or Random.
-The bot should take setup turns for the opposing side.
-After setup is complete, the existing autoplay/replay flow should run unchanged.
+Players should be able to:
+- create a private room
+- join via room code
+- see synchronized setup turns
+- place pieces in alternating visible setup
+- transition together into the existing autoplay/replay flow
 
 ## Non-negotiables
-- Backend is the source of truth for legality.
+- Backend is the source of truth for legality and turn order.
 - Do not change core game rules unless fixing a real bug.
 - Do not redesign the app.
-- Do not implement multiplayer in this sprint.
-- Do not implement accounts, persistence, deployment work, or public lobbies.
-- Do not introduce major dependencies unless clearly justified.
-- Keep the current premium board-first UI direction intact.
-
-## Bot rules
-The bot is only responsible for setup actions.
-
-It must always respect:
-- budget
-- mandatory pawn requirements
-- legal square restrictions
-- king-last rule
-- impossible-state prevention already enforced by backend
-- existing setup/action model
-
-The bot must never:
-- create illegal positions
-- create impossible-to-finish states
-- bypass backend validation
-- place kings early
-- break autoplay
+- Do not implement accounts/auth in this sprint.
+- Do not implement public matchmaking in this sprint.
+- Do not add database/persistence unless absolutely necessary.
+- Do not overbuild chat, social features, or profile systems.
+- Preserve the current premium board-first UI direction.
 
 ## Scope for this sprint
 Build only:
-1. solo-vs-bot mode
-2. side selection for the human: White / Black / Random
-3. backend easy bot for setup turns
-4. frontend bot-turn handling / disabled state while bot acts
-5. tests for legality and setup completion
-6. progress logging in `BOT_PROGRESS.md`
+1. private room creation
+2. join by room code
+3. multiplayer setup synchronization
+4. synchronized autoplay/replay state
+5. back-to-menu / leave-room flow
+6. progress logging in `MULTIPLAYER_PROGRESS.md`
 
-## Easy bot expectations
-This sprint is easy difficulty only.
+## Multiplayer design rules
+- Use a server-authoritative room/game state.
+- Each room should have exactly one shared game state.
+- One player controls White, the other controls Black.
+- Setup remains visible and alternating.
+- Only the active side can act.
+- Illegal actions must still be rejected by backend rules.
+- Both clients should see the same board and state.
+- Existing autoplay logic should run after setup completes.
+- Existing replay UI should remain usable for both players.
 
-That means:
-- legal only
-- reliable
-- simple heuristics are okay
-- some randomness is good
-- variation is good
-- intelligence is less important than correctness
+## Technical direction
+Prefer:
+- FastAPI backend
+- WebSocket sync for live multiplayer events
+- Keep room state in memory for v1 unless persistence is unavoidable
 
-Suggested behavior:
-- enumerate legal candidate setup actions
-- heavily prefer satisfying mandatory pawns early
-- avoid obviously silly king placement
-- mildly prefer reasonable squares when possible
-- choose among legal weighted candidates
+Avoid:
+- database work
+- complex reconnect architectures beyond minimal resilience
+- major frontend rewrites
+- speculative abstractions that delay shipping
+
+## UI expectations
+Add only the minimum UI needed:
+- create room
+- join room by code
+- show room code
+- show player side / connected state
+- disable actions when it is not the player’s turn
+- show waiting states cleanly
+- preserve current board/sidebar layout direction
+
+## Skip simulation behavior
+Do not implement full skip-agreement workflow yet unless it is trivial.
+If skip exists already for solo/autoplay, leave multiplayer-compatible hooks cleanly but do not overbuild consensus logic in this sprint unless explicitly needed.
 
 ## Code quality
 - Prefer small, focused changes.
-- Reuse existing rules/service layers.
-- Do not duplicate backend rule logic unnecessarily.
-- Keep bot logic in dedicated backend modules/services.
-- Keep frontend changes minimal and consistent with the current UI.
-- Add/update tests for backend logic and setup progression.
+- Reuse existing service/rules pathways.
+- Keep multiplayer logic in dedicated backend modules/services where possible.
+- Add/update tests for room creation, joining, synchronized actions, and autoplay progression.
+- Avoid dead code and UI hacks.
 
 ## Required outputs
 Create/update:
-- `BOT_PROGRESS.md`
+- `MULTIPLAYER_PROGRESS.md`
 
-It should contain:
+It should include:
 - initial plan
 - milestones completed
 - files changed
@@ -94,10 +100,10 @@ It should contain:
 Stop and report instead of continuing if:
 - backend tests fail and cannot be fixed confidently
 - frontend build fails and cannot be fixed confidently
-- bot cannot be made reliable without changing core rules
-- a change would require multiplayer architecture
-- a change would require a broad UI redesign
-- autoplay flow becomes unstable
+- room synchronization is unreliable
+- autoplay breaks in multiplayer
+- a change would require accounts/auth or major persistence work
+- UI would need a broad redesign to continue
 
 ## Validation required before stopping
 Run:
@@ -108,11 +114,12 @@ Before finishing, summarize:
 - files changed
 - what was implemented
 - what still needs manual QA
-- any known limitations in the easy bot
+- known limitations in multiplayer v1
 
 ## After this sprint
-The next milestone should likely be one of:
-- medium bot heuristics
-- multiplayer room-code mode
+The likely next milestone is:
+- multiplayer polish (reconnect, leave/rematch, optional skip agreement)
+or
+- bot difficulty tuning
 
 Do not start either unless explicitly asked.
