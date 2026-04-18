@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.game.engine import EngineError, EngineUnavailableError
 from app.game.models import ActionRequest, ApiResponse, CreateSoloGameRequest
 from app.game.rules import RuleViolation
 from app.game.service import service
@@ -48,4 +49,8 @@ def apply_action(game_id: str, request: ActionRequest) -> ApiResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuleViolation as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EngineUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EngineError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return ApiResponse(message="Action applied.", game=game)

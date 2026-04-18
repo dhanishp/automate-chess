@@ -4,6 +4,7 @@ export type Side = 'white' | 'black'
 export type Phase = 'setup' | 'ready_for_autoplay' | 'autoplay' | 'results'
 export type ActionType = 'place_piece' | 'finish_setup' | 'place_king'
 export type PieceType = 'P' | 'N' | 'B' | 'R' | 'Q' | 'K'
+export type AutoplayStatus = 'not_ready' | 'running' | 'ready' | 'failed'
 
 export interface PlacedPiece {
   type: PieceType
@@ -39,6 +40,23 @@ export interface GameState {
   rules: GameRules
   event_log: string[]
   result: string | null
+  autoplay: AutoplayState
+}
+
+export interface ReplayMove {
+  ply: number
+  uci: string
+  san: string
+  fen_after: string
+}
+
+export interface AutoplayState {
+  status: AutoplayStatus
+  initial_fen: string | null
+  moves: ReplayMove[]
+  final_fen: string | null
+  result: string | null
+  error: string | null
 }
 
 export interface ApiResponse {

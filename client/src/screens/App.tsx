@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { AppHeader, type AppTheme, type HeaderTone } from '../components/AppHeader'
+import { AutoplayViewer } from '../components/AutoplayViewer'
 import { Board, type BoardSquareData } from '../components/Board'
 import { Sidebar } from '../components/Sidebar'
 import {
   ApiError,
   applyAction,
   createSoloGame,
-  getApiBaseUrl,
   getGame,
   type GameState,
   type PieceType,
@@ -14,6 +15,7 @@ import {
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const
 const SESSION_STORAGE_GAME_KEY = 'automate-chess-game-id'
+const THEME_STORAGE_KEY = 'automate-chess-theme'
 const PIECE_LABELS: Record<PieceType, string> = {
   P: 'Pawn',
   N: 'Knight',
@@ -94,6 +96,23 @@ function formatPhaseLabel(phase: GameState['phase']): string {
     .join(' ')
 }
 
+function getPreferredTheme(): AppTheme {
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
+  return stored === 'light' ? 'light' : 'dark'
+}
+
+function getHeaderTone(game: GameState, replayFinished = false): HeaderTone {
+  if (replayFinished) {
+    return 'complete'
+  }
+
+  if (game.phase === 'setup' || game.phase === 'ready_for_autoplay') {
+    return 'setup'
+  }
+
+  return 'autoplay'
+}
+
 function getActivePlayerStatus(game: GameState) {
   const activePlayer = game[game.setup_turn]
   const pawnsPlaced = activePlayer.pieces.filter((piece) => piece.type === 'P').length
@@ -143,6 +162,15 @@ export function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [loadingMessage, setLoadingMessage] = useState('Creating solo game...')
   const [pendingActionLabel, setPendingActionLabel] = useState<string | null>(null)
+  const [isCalculatingAutoplay, setIsCalculatingAutoplay] = useState(false)
+  const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
+  const [replayFinished, setReplayFinished] = useState(false)
+  const actionInFlightRef = useRef(false)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+  }, [theme])
 
   useEffect(() => {
     let cancelled = false
@@ -180,6 +208,10 @@ export function App() {
       setIsKingPlacementMode(false)
       setSelectedPiece(null)
     }
+
+    if (game.phase !== 'autoplay') {
+      setReplayFinished(false)
+    }
   }, [game])
 
   useEffect(() => {
@@ -193,10 +225,11 @@ export function App() {
   }, [game, isKingPlacementMode])
 
   async function refreshGame() {
-    if (!game) {
+    if (!game || actionInFlightRef.current) {
       return
     }
 
+    actionInFlightRef.current = true
     setPendingActionLabel('Refreshing board state...')
     setErrorMessage(null)
 
@@ -207,6 +240,28 @@ export function App() {
       setErrorMessage(getErrorMessage(error))
     } finally {
       setPendingActionLabel(null)
+      actionInFlightRef.current = false
+    }
+  }
+
+  async function startNewGame() {
+    actionInFlightRef.current = false
+    setLoadingMessage('Creating solo game...')
+    setPendingActionLabel(null)
+    setErrorMessage(null)
+    setIsKingPlacementMode(false)
+    setSelectedPiece('P')
+    setIsCalculatingAutoplay(false)
+    setReplayFinished(false)
+
+    try {
+      const response = await createSoloGame()
+      window.sessionStorage.setItem(SESSION_STORAGE_GAME_KEY, response.game.game_id)
+      setGame(response.game)
+      setLoadingMessage('')
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error))
+      setLoadingMessage('')
     }
   }
 
@@ -216,12 +271,19 @@ export function App() {
     piece_type?: PieceType
     square?: string
   }, label: string) {
-    if (!game) {
+    if (!game || actionInFlightRef.current) {
       return
     }
 
+    const triggersAutoplay =
+      payload.action_type === 'place_king' &&
+      !game[payload.side].king_square &&
+      game[payload.side === 'white' ? 'black' : 'white'].king_square !== null
+
+    actionInFlightRef.current = true
     setPendingActionLabel(label)
     setErrorMessage(null)
+    setIsCalculatingAutoplay(triggersAutoplay)
 
     try {
       const response = await applyAction(game.game_id, payload)
@@ -231,11 +293,13 @@ export function App() {
       setErrorMessage(getErrorMessage(error))
     } finally {
       setPendingActionLabel(null)
+      setIsCalculatingAutoplay(false)
+      actionInFlightRef.current = false
     }
   }
 
   async function handleSquareClick(square: string) {
-    if (!game || pendingActionLabel) {
+    if (!game || pendingActionLabel || actionInFlightRef.current) {
       return
     }
 
@@ -268,7 +332,7 @@ export function App() {
   }
 
   function handleSelectPiece(piece: PieceType) {
-    if (!game || game.phase !== 'setup') {
+    if (!game || game.phase !== 'setup' || pendingActionLabel || actionInFlightRef.current) {
       return
     }
 
@@ -284,7 +348,7 @@ export function App() {
   }
 
   async function handleFinishSetup() {
-    if (!game) {
+    if (!game || actionInFlightRef.current) {
       return
     }
 
@@ -337,22 +401,210 @@ export function App() {
         : 'None'
   const activePlayerStatus = getActivePlayerStatus(game)
   const readyForAutoplay = game.phase === 'ready_for_autoplay'
+  const autoplayReady = game.phase === 'autoplay' && game.autoplay.status === 'ready' && !!game.autoplay.initial_fen
+  const autoplayPhase = game.phase === 'autoplay'
   const phaseBadge = readyForAutoplay ? 'Setup Complete' : formatPhaseLabel(game.phase)
   const turnBadge = isSetupActive ? `${game.setup_turn[0].toUpperCase() + game.setup_turn.slice(1)} Turn` : 'Setup Locked'
+  const headerTone = getHeaderTone(game)
+
+  if (autoplayReady) {
+    return (
+      <div className="shell">
+        <AppHeader
+          primaryPill="Autoplay"
+          secondaryPill={replayFinished ? 'Result Ready' : 'Pending Result'}
+          tone={replayFinished ? 'complete' : 'autoplay'}
+          theme={theme}
+          onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+        />
+        <AutoplayViewer
+          game={game}
+          onRefresh={() => {
+            void refreshGame()
+          }}
+          onNewGame={() => {
+            void startNewGame()
+          }}
+          onReplayFinishedChange={setReplayFinished}
+        />
+      </div>
+    )
+  }
+
+  if (isCalculatingAutoplay) {
+    return (
+      <div className="shell">
+        <AppHeader
+          primaryPill="Autoplay"
+          secondaryPill="Calculating"
+          tone="autoplay"
+          theme={theme}
+          onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+        />
+
+        <main className="layout">
+          <section className="board-column">
+            <div className="board-stage">
+              <div className="stage-heading">
+                <div>
+                  <p className="eyebrow">Engine Transition</p>
+                  <h2>Calculating autoplay...</h2>
+                </div>
+              </div>
+
+              <section className="panel board-panel premium-card compact-board-panel">
+                <div className="board-overlay-shell">
+                  <Board
+                    activeSide={game.setup_turn}
+                    interactive={false}
+                    disabledAppearance={false}
+                    selectedSquare={null}
+                    selectedModeLabel="Final setup position"
+                    squares={boardSquares}
+                    onSquareClick={() => {}}
+                  />
+                  <div className="board-overlay">
+                    <section className="board-overlay-card board-overlay-card-loading">
+                      <div className="loading-indicator" aria-hidden="true">
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                      <div>
+                        <p className="eyebrow">Engine is preparing the game</p>
+                        <h3>Calculating autoplay...</h3>
+                        <p>The starting position is locked in. Stockfish is generating the full engine-vs-engine replay from this setup now.</p>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <aside className="sidebar">
+            <section className="panel premium-card status-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">Current Status</p>
+                  <h2 className="status-title">Calculating</h2>
+                </div>
+              </div>
+
+              <div className="status-line">
+                <span className="live-dot tone-autoplay on" />
+                <strong>Generating autoplay replay</strong>
+                <span className="status-chip tone-autoplay">Working</span>
+              </div>
+
+              <div className="status-metrics">
+                <div className="metric-card emphasis">
+                  <span>Phase</span>
+                  <strong>Autoplay</strong>
+                </div>
+                <div className="metric-card">
+                  <span>Status</span>
+                  <strong>Calculating</strong>
+                </div>
+                <div className="metric-card">
+                  <span>White pieces</span>
+                  <strong>{game.white.pieces.length + (game.white.king_square ? 1 : 0)}</strong>
+                </div>
+                <div className="metric-card">
+                  <span>Black pieces</span>
+                  <strong>{game.black.pieces.length + (game.black.king_square ? 1 : 0)}</strong>
+                </div>
+              </div>
+
+              {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
+              {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
+            </section>
+          </aside>
+        </main>
+      </div>
+    )
+  }
+
+  if (autoplayPhase) {
+    const autoplayHeadline =
+      game.autoplay.status === 'failed'
+        ? 'Autoplay generation failed'
+        : game.autoplay.status === 'running'
+          ? 'Generating autoplay replay'
+          : 'Autoplay replay pending'
+    const autoplayMessage =
+      game.autoplay.error ??
+      (game.autoplay.status === 'running'
+        ? 'The backend is generating the engine-vs-engine replay from the finished setup.'
+        : 'The finished setup is locked in, but replay data is not ready yet.')
+
+    return (
+      <div className="shell">
+        <AppHeader
+          primaryPill="Autoplay"
+          secondaryPill={game.autoplay.status}
+          tone="autoplay"
+          theme={theme}
+          onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+        />
+
+        <main className="layout">
+          <section className="board-column">
+            <div className="board-stage">
+              <div className="stage-heading">
+                <div>
+                  <p className="eyebrow">Replay Status</p>
+                  <h2>{autoplayHeadline}</h2>
+                </div>
+              </div>
+
+              <section className="panel board-panel premium-card compact-board-panel">
+                <div className="board-overlay-shell">
+                  <Board
+                    activeSide={game.setup_turn}
+                    interactive={false}
+                    disabledAppearance={false}
+                    selectedSquare={null}
+                    selectedModeLabel="Finished setup position"
+                    squares={boardSquares}
+                    onSquareClick={() => {}}
+                  />
+                  <div className="board-overlay">
+                    <section className="board-overlay-card">
+                      <div>
+                        <p className="eyebrow">Finished Setup</p>
+                        <h3>{autoplayHeadline}</h3>
+                        <p>{autoplayMessage}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="button primary"
+                        onClick={() => {
+                          void refreshGame()
+                        }}
+                      >
+                        Refresh replay state
+                      </button>
+                    </section>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+        </main>
+      </div>
+    )
+  }
 
   return (
     <div className="shell">
-      <header className="topbar">
-        <div className="brand-block">
-          <div className="wordmark-row">
-            <h1>Automate Chess</h1>
-          </div>
-        </div>
-        <div className="topbar-meta">
-          <div className={`pill ${isSetupActive ? 'live-pill' : ''}`}>{phaseBadge}</div>
-          <div className="pill">{turnBadge}</div>
-        </div>
-      </header>
+      <AppHeader
+        primaryPill={phaseBadge}
+        secondaryPill={turnBadge}
+        tone={headerTone}
+        theme={theme}
+        onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+      />
 
       <main className="layout">
         <section className="board-column">
@@ -369,7 +621,7 @@ export function App() {
                 <div>
                   <p className="eyebrow">Next Stage</p>
                   <h3>Ready for autoplay</h3>
-                  <p>The formation phase is complete and both kings are placed. Autoplay is the next stage, but that viewer has not been wired yet.</p>
+                  <p>The formation phase is complete and both kings are placed. The backend should generate an autoplay replay from this position next.</p>
                 </div>
               </section>
             ) : null}
@@ -409,6 +661,7 @@ export function App() {
           onRefresh={() => {
             void refreshGame()
           }}
+          statusTone={headerTone}
         />
       </main>
     </div>

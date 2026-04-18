@@ -28,6 +28,7 @@ interface SidebarProps {
   onSelectPiece: (piece: PieceType) => void
   onFinishSetup: () => void
   onRefresh: () => void
+  statusTone: 'setup' | 'autoplay' | 'complete'
 }
 
 function formatSide(side: Side): string {
@@ -139,6 +140,7 @@ export function Sidebar({
   onSelectPiece,
   onFinishSetup,
   onRefresh,
+  statusTone,
 }: SidebarProps) {
   const activePlayer = game[game.setup_turn]
   const canInteract = isSetupActive && pendingActionLabel === null
@@ -165,9 +167,9 @@ export function Sidebar({
         </div>
 
         <div className="status-line">
-          <span className={`live-dot ${isLivePhase ? 'on' : ''}`} />
+          <span className={`live-dot tone-${statusTone} ${isLivePhase ? 'on' : ''}`} />
           <strong>{isSetupActive ? `${activeSideLabel} to move` : 'Setup interactions disabled'}</strong>
-          <span className="status-chip">{isLivePhase ? 'Live phase' : 'Locked'}</span>
+          <span className={`status-chip tone-${statusTone}`}>{isLivePhase ? 'Live phase' : 'Locked'}</span>
         </div>
 
         <div className="status-metrics">

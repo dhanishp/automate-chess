@@ -23,6 +23,13 @@ class Phase(str, Enum):
     RESULTS = "results"
 
 
+class AutoplayStatus(str, Enum):
+    NOT_READY = "not_ready"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
+
+
 class ActionType(str, Enum):
     PLACE_PIECE = "place_piece"
     FINISH_SETUP = "finish_setup"
@@ -95,6 +102,7 @@ class GameState(BaseModel):
     rules: GameRules = Field(default_factory=GameRules)
     event_log: list[str] = Field(default_factory=list)
     result: str | None = None
+    autoplay: "AutoplayState" = Field(default_factory=lambda: AutoplayState())
 
     def player(self, side: Side) -> PlayerSetupState:
         return self.white if side is Side.WHITE else self.black
@@ -132,3 +140,19 @@ class ApiResponse(BaseModel):
     ok: bool = True
     message: str | None = None
     game: GameState
+
+
+class ReplayMove(BaseModel):
+    ply: int
+    uci: str
+    san: str
+    fen_after: str
+
+
+class AutoplayState(BaseModel):
+    status: AutoplayStatus = AutoplayStatus.NOT_READY
+    initial_fen: str | None = None
+    moves: list[ReplayMove] = Field(default_factory=list)
+    final_fen: str | None = None
+    result: str | None = None
+    error: str | None = None

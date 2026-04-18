@@ -12,6 +12,7 @@ export interface BoardSquareData {
 interface BoardProps {
   activeSide: Side
   interactive: boolean
+  disabledAppearance?: boolean
   selectedSquare: string | null
   selectedModeLabel: string
   squares: BoardSquareData[]
@@ -21,6 +22,7 @@ interface BoardProps {
 export function Board({
   activeSide,
   interactive,
+  disabledAppearance = !interactive,
   selectedSquare,
   selectedModeLabel,
   squares,
@@ -35,7 +37,10 @@ export function Board({
 
       <div className="board-side-label top" aria-hidden="true">Black</div>
 
-      <div className={`board ${interactive ? 'is-interactive' : ''}`} aria-label="Automate setup board">
+      <div
+        className={`board ${interactive ? 'is-interactive' : ''} ${disabledAppearance ? 'is-muted' : 'is-readonly'}`}
+        aria-label="Automate setup board"
+      >
         {squares.map((squareData, index) => {
           const rank = 8 - Math.floor(index / 8)
           const file = FILES[index % 8]
@@ -47,8 +52,13 @@ export function Board({
               key={squareData.square}
               type="button"
               className={`board-square ${isDark ? 'dark' : 'light'} ${isSelected ? 'selected' : ''}`}
-              onClick={() => onSquareClick(squareData.square)}
-              disabled={!interactive}
+              onClick={() => {
+                if (interactive) {
+                  onSquareClick(squareData.square)
+                }
+              }}
+              disabled={!interactive && disabledAppearance}
+              aria-disabled={!interactive}
               aria-label={`${squareData.square}${squareData.piece ? ` occupied by ${squareData.side} ${squareData.piece}` : ''}`}
             >
               <span className="square-rank">{file === 'a' ? rank : ''}</span>
