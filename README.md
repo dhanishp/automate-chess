@@ -24,12 +24,18 @@ Not implemented yet:
 - WebSockets / multiplayer sync
 - live board UI interactions
 
-## Run the backend
+## Run locally
+
+Use any of these from the project root:
 
 ```bash
-cd server
-uvicorn app.main:app --reload
+bash ./run-dev.sh
+make dev
 ```
+
+On macOS, you can also double-click `Launch Automate Chess.command`.
+
+The launcher will create `server/.venv`, install backend dependencies, install frontend dependencies when needed, start the API on `http://127.0.0.1:8000`, and start the Vite client on `http://127.0.0.1:5173`.
 
 Backend docs:
 - Swagger UI: http://127.0.0.1:8000/docs
@@ -40,13 +46,3 @@ Backend docs:
 cd server
 pytest -q
 ```
-
-## Frontend scaffold
-
-```bash
-cd client
-npm install
-npm run dev
-```
-
-The frontend is only a shell right now. The backend is the real starting point.
