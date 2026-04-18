@@ -6,6 +6,7 @@ import { Sidebar } from '../components/Sidebar'
 import {
   ApiError,
   applyAction,
+  createSampleGame,
   createSoloGame,
   getGame,
   type GameState,
@@ -94,6 +95,19 @@ function formatPhaseLabel(phase: GameState['phase']): string {
     .split('_')
     .map((part) => part[0].toUpperCase() + part.slice(1))
     .join(' ')
+}
+
+function formatReplayResult(result: string | null | undefined): string {
+  switch (result) {
+    case '1-0':
+      return 'White wins'
+    case '0-1':
+      return 'Black wins'
+    case '1/2-1/2':
+      return 'Draw'
+    default:
+      return result ?? 'Pending'
+  }
 }
 
 function getPreferredTheme(): AppTheme {
@@ -265,6 +279,28 @@ export function App() {
     }
   }
 
+  async function loadSampleGame() {
+    actionInFlightRef.current = false
+    setLoadingMessage('Loading sample setup...')
+    setPendingActionLabel('Loading sample setup...')
+    setErrorMessage(null)
+    setIsKingPlacementMode(false)
+    setSelectedPiece('P')
+    setIsCalculatingAutoplay(false)
+    setReplayFinished(false)
+
+    try {
+      const response = await createSampleGame()
+      window.sessionStorage.setItem(SESSION_STORAGE_GAME_KEY, response.game.game_id)
+      setGame(response.game)
+      setLoadingMessage('')
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error))
+    } finally {
+      setPendingActionLabel(null)
+    }
+  }
+
   async function submitAction(payload: {
     action_type: 'place_piece' | 'finish_setup' | 'place_king'
     side: Side
@@ -404,15 +440,16 @@ export function App() {
   const autoplayReady = game.phase === 'autoplay' && game.autoplay.status === 'ready' && !!game.autoplay.initial_fen
   const autoplayPhase = game.phase === 'autoplay'
   const phaseBadge = readyForAutoplay ? 'Setup Complete' : formatPhaseLabel(game.phase)
-  const turnBadge = isSetupActive ? `${game.setup_turn[0].toUpperCase() + game.setup_turn.slice(1)} Turn` : 'Setup Locked'
+  const setupHeaderSecondary = isSetupActive ? undefined : 'Setup Locked'
   const headerTone = getHeaderTone(game)
 
   if (autoplayReady) {
+    const outcomeLabel = replayFinished ? formatReplayResult(game.autoplay.result ?? game.result) : 'Pending Result'
+
     return (
       <div className="shell">
         <AppHeader
-          primaryPill="Autoplay"
-          secondaryPill={replayFinished ? 'Result Ready' : 'Pending Result'}
+          primaryPill={outcomeLabel}
           tone={replayFinished ? 'complete' : 'autoplay'}
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -425,7 +462,8 @@ export function App() {
           onNewGame={() => {
             void startNewGame()
           }}
-          onReplayFinishedChange={setReplayFinished}
+          outcomeKnown={replayFinished}
+          onOutcomeReveal={() => setReplayFinished(true)}
         />
       </div>
     )
@@ -435,8 +473,7 @@ export function App() {
     return (
       <div className="shell">
         <AppHeader
-          primaryPill="Autoplay"
-          secondaryPill="Calculating"
+          primaryPill="Calculating"
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -541,8 +578,7 @@ export function App() {
     return (
       <div className="shell">
         <AppHeader
-          primaryPill="Autoplay"
-          secondaryPill={game.autoplay.status}
+          primaryPill={game.autoplay.status}
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -600,7 +636,7 @@ export function App() {
     <div className="shell">
       <AppHeader
         primaryPill={phaseBadge}
-        secondaryPill={turnBadge}
+        secondaryPill={setupHeaderSecondary}
         tone={headerTone}
         theme={theme}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -660,6 +696,9 @@ export function App() {
           }}
           onRefresh={() => {
             void refreshGame()
+          }}
+          onLoadSample={() => {
+            void loadSampleGame()
           }}
           statusTone={headerTone}
         />

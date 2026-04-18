@@ -70,6 +70,10 @@ export interface CreateSoloGameRequest {
   black_name?: string
 }
 
+export interface CreateSampleGameRequest {
+  preset_id?: string
+}
+
 export interface ActionRequest {
   action_type: ActionType
   side: Side
@@ -151,6 +155,13 @@ function formatErrorDetail(detail: unknown, fallback: string): string {
 
 export function createSoloGame(payload: CreateSoloGameRequest = {}): Promise<ApiResponse> {
   return request<ApiResponse>('/games/solo', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createSampleGame(payload: CreateSampleGameRequest = {}): Promise<ApiResponse> {
+  return request<ApiResponse>('/games/sample', {
     method: 'POST',
     body: JSON.stringify(payload),
   })

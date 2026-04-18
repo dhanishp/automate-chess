@@ -119,6 +119,10 @@ class CreateSoloGameRequest(BaseModel):
     black_name: str = "Bot"
 
 
+class CreateSampleGameRequest(BaseModel):
+    preset_id: str = "quickstart"
+
+
 class ActionRequest(BaseModel):
     action_type: ActionType
     side: Side

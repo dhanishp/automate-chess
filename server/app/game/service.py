@@ -4,6 +4,7 @@ from typing import Dict
 
 from app.game.engine import EngineProvider, LocalStockfishProvider
 from app.game.models import ActionRequest, CreateSoloGameRequest, GameState, Phase
+from app.game.presets import build_sample_game_actions
 from app.game.rules import AutomateRulesEngine
 
 
@@ -18,6 +19,18 @@ class GameService:
         game.event_log.append(
             f"Created solo game: {request.white_name} vs {request.black_name}"
         )
+        self._games[game.game_id] = game
+        return game
+
+    def create_sample_game(self, preset_id: str = "quickstart") -> GameState:
+        request, actions = build_sample_game_actions(preset_id)
+        game = GameState()
+        game.event_log.append(f"Created sample game: {request.white_name} vs {request.black_name}")
+        game.event_log.append(f"Loaded sample preset: {preset_id}")
+
+        for action in actions:
+            game = self._rules_engine.apply_action(game, action)
+
         self._games[game.game_id] = game
         return game
 

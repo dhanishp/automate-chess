@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Board } from './Board'
 import { buildBoardFromFen } from '../lib/board'
 import type { GameState } from '../lib/api'
@@ -13,7 +13,8 @@ interface AutoplayViewerProps {
   game: GameState
   onRefresh: () => void
   onNewGame: () => void
-  onReplayFinishedChange: (finished: boolean) => void
+  outcomeKnown: boolean
+  onOutcomeReveal: () => void
 }
 
 function formatReplayResult(result: string | null | undefined): string {
@@ -29,17 +30,18 @@ function formatReplayResult(result: string | null | undefined): string {
   }
 }
 
-export function AutoplayViewer({ game, onRefresh, onNewGame, onReplayFinishedChange }: AutoplayViewerProps) {
+export function AutoplayViewer({ game, onRefresh, onNewGame, outcomeKnown, onOutcomeReveal }: AutoplayViewerProps) {
   const [currentPly, setCurrentPly] = useState(0)
   const [isPlaying, setIsPlaying] = useState(true)
   const [speedLabel, setSpeedLabel] = useState<(typeof PLAYBACK_SPEEDS)[number]['label']>('Normal')
+  const activeMoveRef = useRef<HTMLButtonElement | null>(null)
   const moves = game.autoplay.moves
   const totalPlies = moves.length
   const currentFen = currentPly === 0 ? game.autoplay.initial_fen : moves[currentPly - 1]?.fen_after
   const currentMove = currentPly === 0 ? null : moves[currentPly - 1]
   const replayFinished = totalPlies > 0 && currentPly >= totalPlies
   const resultLabel = formatReplayResult(game.autoplay.result ?? game.result)
-  const resultVisibilityLabel = replayFinished ? resultLabel : 'Pending'
+  const resultVisibilityLabel = outcomeKnown ? resultLabel : 'Pending'
   const finalMove = moves[totalPlies - 1] ?? null
   const playbackDelayMs = PLAYBACK_SPEEDS.find((speed) => speed.label === speedLabel)?.delayMs ?? 1700
 
@@ -49,8 +51,17 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onReplayFinishedCha
   }, [game.game_id, game.autoplay.initial_fen, totalPlies])
 
   useEffect(() => {
-    onReplayFinishedChange(replayFinished)
-  }, [onReplayFinishedChange, replayFinished])
+    if (replayFinished) {
+      onOutcomeReveal()
+    }
+  }, [onOutcomeReveal, replayFinished])
+
+  useEffect(() => {
+    activeMoveRef.current?.scrollIntoView({
+      block: 'nearest',
+      behavior: isPlaying ? 'smooth' : 'auto',
+    })
+  }, [currentPly, isPlaying])
 
   useEffect(() => {
     if (!isPlaying || currentPly >= totalPlies) {
@@ -285,6 +296,7 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onReplayFinishedCha
                 <button
                   type="button"
                   className="move-list-button"
+                  ref={index + 1 === currentPly ? activeMoveRef : null}
                   onClick={() => {
                     setIsPlaying(false)
                     setCurrentPly(index + 1)

@@ -2,7 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.game.engine import EngineError, EngineUnavailableError
-from app.game.models import ActionRequest, ApiResponse, CreateSoloGameRequest
+from app.game.models import ActionRequest, ApiResponse, CreateSampleGameRequest, CreateSoloGameRequest
+from app.game.presets import PresetNotFoundError
 from app.game.rules import RuleViolation
 from app.game.service import service
 
@@ -30,6 +31,15 @@ def health() -> dict[str, str]:
 def create_solo_game(request: CreateSoloGameRequest) -> ApiResponse:
     game = service.create_solo_game(request)
     return ApiResponse(message="Solo game created.", game=game)
+
+
+@app.post("/games/sample", response_model=ApiResponse)
+def create_sample_game(request: CreateSampleGameRequest) -> ApiResponse:
+    try:
+        game = service.create_sample_game(request.preset_id)
+    except PresetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ApiResponse(message="Sample game created.", game=game)
 
 
 @app.get("/games/{game_id}", response_model=ApiResponse)

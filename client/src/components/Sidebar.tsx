@@ -28,6 +28,7 @@ interface SidebarProps {
   onSelectPiece: (piece: PieceType) => void
   onFinishSetup: () => void
   onRefresh: () => void
+  onLoadSample: () => void
   statusTone: 'setup' | 'autoplay' | 'complete'
 }
 
@@ -140,6 +141,7 @@ export function Sidebar({
   onSelectPiece,
   onFinishSetup,
   onRefresh,
+  onLoadSample,
   statusTone,
 }: SidebarProps) {
   const activePlayer = game[game.setup_turn]
@@ -307,9 +309,19 @@ export function Sidebar({
         </div>
 
         {isSetupActive ? (
-          <button type="button" className="button primary action-button" onClick={onFinishSetup} disabled={!canInteract || !canFinishSetup}>
-            Finish setup for {formatSide(game.setup_turn)}
-          </button>
+          <>
+            <button type="button" className="button primary action-button" onClick={onFinishSetup} disabled={!canInteract || !canFinishSetup}>
+              Finish setup for {formatSide(game.setup_turn)}
+            </button>
+            <button
+              type="button"
+              className="button ghost secondary-utility-button"
+              onClick={onLoadSample}
+              disabled={!canInteract}
+            >
+              Load sample setup
+            </button>
+          </>
         ) : (
           <p className="hint-message">Setup is complete. Autoplay has not been implemented yet, so this screen is intentionally read-only now.</p>
         )}

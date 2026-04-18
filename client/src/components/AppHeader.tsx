@@ -1,5 +1,3 @@
-import { BrandMark } from './BrandMark'
-
 export type HeaderTone = 'setup' | 'autoplay' | 'complete'
 export type AppTheme = 'dark' | 'light'
 
@@ -16,7 +14,9 @@ export function AppHeader({ primaryPill, secondaryPill, tone, theme, onToggleThe
     <header className="topbar">
       <div className="brand-block">
         <div className="wordmark-row">
-          <BrandMark />
+          <div className="brand-mark" aria-hidden="true">
+            <img src="/automate-logo.png" alt="" className="brand-logo-image" />
+          </div>
           <h1>Automate Chess</h1>
         </div>
       </div>
@@ -24,8 +24,16 @@ export function AppHeader({ primaryPill, secondaryPill, tone, theme, onToggleThe
         <button type="button" className="theme-toggle" onClick={onToggleTheme} aria-label="Toggle light and dark theme">
           <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
         </button>
-        <div className={`pill tone-${tone}`}>{primaryPill}</div>
-        {secondaryPill ? <div className={`pill tone-${tone}`}>{secondaryPill}</div> : null}
+        <div className={`pill tone-${tone}`}>
+          <span className={`pill-dot tone-${tone}`} aria-hidden="true" />
+          <span>{primaryPill}</span>
+        </div>
+        {secondaryPill ? (
+          <div className={`pill tone-${tone}`}>
+            <span className={`pill-dot tone-${tone}`} aria-hidden="true" />
+            <span>{secondaryPill}</span>
+          </div>
+        ) : null}
       </div>
     </header>
   )

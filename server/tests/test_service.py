@@ -81,3 +81,33 @@ def test_engine_unavailable_does_not_store_half_completed_autoplay_state() -> No
     assert persisted.phase == "setup"
     assert persisted.black.king_square is None
     assert persisted.autoplay.status == "not_ready"
+
+
+def test_create_sample_game_is_mid_setup_sandbox() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+
+    game = service.create_sample_game()
+
+    assert game.phase == "setup"
+    assert game.setup_turn == "white"
+    assert game.white.king_square is None
+    assert game.black.king_square is None
+    assert game.white.finished_spending is False
+    assert game.black.finished_spending is False
+    assert game.white.mandatory_pawn_count == game.rules.mandatory_pawns
+    assert game.black.mandatory_pawn_count == game.rules.mandatory_pawns
+    assert game.white.points_remaining > 0
+    assert game.black.points_remaining > 0
+    assert any("Loaded sample preset: quickstart" in entry for entry in game.event_log)
+
+    continued = service.apply_action(
+        game.game_id,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side="white", piece_type="Q", square="d1"),
+    )
+    assert continued.setup_turn == "black"
+
+    continued = service.apply_action(
+        game.game_id,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side="black", piece_type="Q", square="d8"),
+    )
+    assert continued.setup_turn == "white"
