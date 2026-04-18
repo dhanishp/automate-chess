@@ -114,6 +114,111 @@ def test_finish_setup_rejects_early_when_mandatory_pawns_are_missing() -> None:
         raise AssertionError("Expected early finish to fail.")
 
 
+def test_non_pawn_move_is_rejected_if_it_leaves_too_few_points_for_required_pawns() -> None:
+    game = build_game()
+
+    for white_square, black_square in (("a2", "a7"), ("b2", "b7"), ("c2", "c7")):
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square=white_square),
+        )
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.PAWN, square=black_square),
+        )
+
+    for white_piece, white_square, black_square in (
+        (PieceType.QUEEN, "d1", "d7"),
+        (PieceType.QUEEN, "e1", "e7"),
+        (PieceType.QUEEN, "f1", "f7"),
+        (PieceType.KNIGHT, "g1", "g7"),
+    ):
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=white_piece, square=white_square),
+        )
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.PAWN, square=black_square),
+        )
+
+    try:
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.QUEEN, square="h1"),
+        )
+    except RuleViolation as exc:
+        assert "too few points or legal pawn squares" in str(exc).lower()
+    else:
+        raise AssertionError("Expected impossible mandatory-pawn state to be rejected.")
+
+
+def test_non_pawn_move_is_allowed_when_pawn_completion_remains_possible() -> None:
+    game = build_game()
+
+    for white_square, black_square in (("a2", "a7"), ("b2", "b7"), ("c2", "c7")):
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square=white_square),
+        )
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.PAWN, square=black_square),
+        )
+
+    for white_piece, white_square, black_square in (
+        (PieceType.QUEEN, "d1", "d7"),
+        (PieceType.QUEEN, "e1", "e7"),
+        (PieceType.QUEEN, "f1", "f7"),
+        (PieceType.KNIGHT, "g1", "g7"),
+    ):
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=white_piece, square=white_square),
+        )
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.PAWN, square=black_square),
+        )
+
+    engine.apply_action(
+        game,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.ROOK, square="h1"),
+    )
+
+    assert game.white.points_remaining == 4
+    assert game.white.pieces[-1].square == "h1"
+
+
+def test_square_capacity_guard_rejects_moves_when_custom_rules_leave_too_few_pawn_squares() -> None:
+    game = build_game()
+    game.rules.pawn_ranks[Side.WHITE] = {2}
+    game.rules.mandatory_pawns = 6
+
+    for white_action, black_square in (
+        (ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square="a2"), "a7"),
+        (ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square="b2"), "b7"),
+        (ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square="c2"), "c7"),
+        (ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.ROOK, square="d2"), "d7"),
+        (ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.ROOK, square="e2"), "e7"),
+    ):
+        engine.apply_action(game, white_action)
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.PAWN, square=black_square),
+        )
+
+    try:
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.ROOK, square="f2"),
+        )
+    except RuleViolation as exc:
+        assert "too few points or legal pawn squares" in str(exc).lower()
+    else:
+        raise AssertionError("Expected square-capacity invariant to be enforced.")
+
+
 
 def test_king_cannot_be_placed_before_finish_or_zero_points() -> None:
     game = build_game()

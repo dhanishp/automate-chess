@@ -18,7 +18,8 @@ class RuleViolation(ValueError):
     pass
 
 
-FILES = set("abcdefgh")
+FILE_CHARS = "abcdefgh"
+FILES = set(FILE_CHARS)
 
 
 class AutomateRulesEngine:
@@ -66,6 +67,14 @@ class AutomateRulesEngine:
         cost = game.rules.costs[piece_type]
         if cost > player.points_remaining:
             raise RuleViolation("Not enough points remaining for that piece.")
+
+        self._ensure_mandatory_pawn_path_remains_viable(
+            game=game,
+            side=side,
+            piece_type=piece_type,
+            placed_square=normalized_square,
+            cost=cost,
+        )
 
         player.pieces.append(PlacedPiece(type=piece_type, square=normalized_square))
         player.points_remaining -= cost
@@ -142,13 +151,51 @@ class AutomateRulesEngine:
         return board.is_attacked_by(not color, king_square)
 
     def _ensure_square_available(self, game: GameState, square: str) -> None:
+        occupied = self._occupied_squares(game)
+        if square in occupied:
+            raise RuleViolation(f"Square {square} is already occupied.")
+
+    def _ensure_mandatory_pawn_path_remains_viable(
+        self,
+        game: GameState,
+        side: Side,
+        piece_type: PieceType,
+        placed_square: str,
+        cost: int,
+    ) -> None:
+        player = game.player(side)
+        pawn_cost = game.rules.costs[PieceType.PAWN]
+        pawn_count_after_move = player.mandatory_pawn_count + (1 if piece_type == PieceType.PAWN else 0)
+        remaining_required_pawns = max(game.rules.mandatory_pawns - pawn_count_after_move, 0)
+        remaining_points_after_move = player.points_remaining - cost
+
+        if remaining_points_after_move < remaining_required_pawns * pawn_cost:
+            raise RuleViolation(
+                "This move would leave too few points or legal pawn squares to satisfy the mandatory pawn requirement."
+            )
+
+        occupied_after_move = self._occupied_squares(game)
+        occupied_after_move.add(placed_square)
+        remaining_legal_pawn_squares = len(self._pawn_squares_for_side(side, game) - occupied_after_move)
+        if remaining_legal_pawn_squares < remaining_required_pawns:
+            raise RuleViolation(
+                "This move would leave too few points or legal pawn squares to satisfy the mandatory pawn requirement."
+            )
+
+    def _occupied_squares(self, game: GameState) -> set[str]:
         occupied = {piece.square for piece in game.white.pieces + game.black.pieces}
         if game.white.king_square:
             occupied.add(game.white.king_square)
         if game.black.king_square:
             occupied.add(game.black.king_square)
-        if square in occupied:
-            raise RuleViolation(f"Square {square} is already occupied.")
+        return occupied
+
+    def _pawn_squares_for_side(self, side: Side, game: GameState) -> set[str]:
+        return {
+            f"{file_char}{rank}"
+            for file_char in FILE_CHARS
+            for rank in game.rules.pawn_ranks[side]
+        }
 
     def _normalize_square(self, square: str) -> str:
         normalized = square.strip().lower()

@@ -72,7 +72,7 @@ select {
 
 .topbar-meta {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -134,29 +134,6 @@ select {
   font-size: clamp(1.5rem, 2.2vw, 2.15rem);
   line-height: 1;
   letter-spacing: -0.04em;
-}
-
-.stage-pills {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.stage-pill {
-  padding: 10px 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.stage-pill.accent {
-  color: var(--success);
-  border-color: rgba(181, 241, 112, 0.24);
 }
 
 .eyebrow {
@@ -286,7 +263,7 @@ select {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 10%;
+  padding: 4.75%;
 }
 
 .piece-glyph {
@@ -294,61 +271,80 @@ select {
   place-items: center;
   width: 100%;
   height: 100%;
-  font-size: clamp(1.7rem, 4.4vw, 3.35rem);
+  font-size: clamp(2.15rem, 5.75vw, 4.3rem);
   line-height: 1;
   overflow: hidden;
+  paint-order: stroke fill;
   text-shadow:
     0 2px 10px rgba(0, 0, 0, 0.28),
     0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 .piece-glyph.white {
-  color: #fbfbf6;
-  -webkit-text-stroke: 1px rgba(24, 24, 24, 0.55);
+  color: #f6f5ef;
+  -webkit-text-stroke: 1px rgba(24, 24, 24, 0.7);
   text-shadow:
-    0 0 1px rgba(255, 255, 255, 0.42),
-    0 2px 10px rgba(0, 0, 0, 0.28),
-    0 0 18px rgba(255, 255, 255, 0.06);
+    0 0 1px rgba(255, 255, 255, 0.48),
+    0 2px 8px rgba(0, 0, 0, 0.22),
+    0 0 16px rgba(255, 255, 255, 0.05);
 }
 
 .piece-glyph.black {
-  color: #7e7a73;
-  -webkit-text-stroke: 1px rgba(235, 232, 226, 0.22);
+  color: #272522;
+  -webkit-text-stroke: 1.35px rgba(245, 243, 236, 0.88);
   text-shadow:
-    0 1px 8px rgba(0, 0, 0, 0.48),
-    0 0 1px rgba(255, 255, 255, 0.05);
+    0 1px 10px rgba(0, 0, 0, 0.56),
+    0 0 1px rgba(255, 255, 255, 0.18);
 }
 
 .piece-glyph.shop.white {
-  color: #f7f7f1;
+  color: #f7f6f0;
 }
 
 .piece-glyph.shop.black {
-  color: #8b867e;
+  color: #2b2926;
+  -webkit-text-stroke: 1.35px rgba(245, 243, 236, 0.86);
 }
 
 .piece-glyph.waiting.white {
-  color: #ebe9e1;
+  color: #eeece5;
 }
 
 .piece-glyph.waiting.black {
-  color: #76726b;
+  color: #302e2a;
+  -webkit-text-stroke: 1.28px rgba(240, 238, 232, 0.76);
 }
 
 .board-piece {
-  font-size: clamp(1.8rem, 4.7vw, 3.5rem);
+  font-size: clamp(2.35rem, 6.2vw, 4.7rem);
 }
 
 .board-square.dark .piece-glyph.black {
-  color: #918c84;
+  color: #34312d;
 }
 
 .board-square.light .piece-glyph.black {
-  color: #69655f;
+  color: #23211e;
 }
 
 .board-square.dark .piece-glyph.white {
-  color: #ffffff;
+  color: #fbfaf5;
+}
+
+.board-square.light .piece-glyph.white {
+  color: #f1efe8;
+}
+
+.piece-button .piece-glyph.white {
+  text-shadow:
+    0 0 1px rgba(255, 255, 255, 0.52),
+    0 1px 8px rgba(0, 0, 0, 0.2);
+}
+
+.piece-button .piece-glyph.black {
+  text-shadow:
+    0 1px 8px rgba(0, 0, 0, 0.54),
+    0 0 1px rgba(255, 255, 255, 0.2);
 }
 
 .square-rank,
@@ -593,6 +589,7 @@ select {
 .piece-button.locked {
   background: #151515;
   border-color: rgba(255, 255, 255, 0.05);
+  opacity: 0.5;
 }
 
 .piece-button-icon {
@@ -602,7 +599,7 @@ select {
 }
 
 .shop-piece {
-  font-size: 2.55rem;
+  font-size: 3.3rem;
 }
 
 .piece-button-copy {
@@ -635,6 +632,12 @@ select {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.piece-button:disabled:hover {
+  transform: none;
+  border-color: rgba(255, 255, 255, 0.05);
+  box-shadow: none;
 }
 
 .requirement-list {

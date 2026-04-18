@@ -351,7 +351,6 @@ export function App() {
         <div className="topbar-meta">
           <div className={`pill ${isSetupActive ? 'live-pill' : ''}`}>{phaseBadge}</div>
           <div className="pill">{turnBadge}</div>
-          <div className="pill">Endpoint: {getApiBaseUrl()}</div>
         </div>
       </header>
 
@@ -362,10 +361,6 @@ export function App() {
               <div>
                 <p className="eyebrow">Board Control</p>
                 <h2>{selectedModeLabel}</h2>
-              </div>
-              <div className="stage-pills">
-                <span className="stage-pill">{phaseBadge}</span>
-                <span className={`stage-pill ${isSetupActive ? 'accent' : ''}`}>{turnBadge}</span>
               </div>
             </div>
 

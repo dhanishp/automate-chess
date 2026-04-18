@@ -10,6 +10,8 @@ const PIECE_LABELS: Record<PieceType, string> = {
   K: 'King',
 }
 
+const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const
+
 interface SidebarProps {
   game: GameState
   selectedPiece: PieceType | null
@@ -39,6 +41,88 @@ function formatPhase(phase: GameState['phase']): string {
     .join(' ')
 }
 
+function getOccupiedSquares(game: GameState): Set<string> {
+  const occupied = new Set<string>()
+
+  for (const side of ['white', 'black'] as Side[]) {
+    for (const piece of game[side].pieces) {
+      occupied.add(piece.square)
+    }
+
+    if (game[side].king_square) {
+      occupied.add(game[side].king_square)
+    }
+  }
+
+  return occupied
+}
+
+function getSquaresForRanks(ranks: number[]): string[] {
+  return FILES.flatMap((file) => ranks.map((rank) => `${file}${rank}`))
+}
+
+function canKeepPawnPathViable(
+  game: GameState,
+  side: Side,
+  piece: PieceType,
+  square: string,
+  occupiedSquares: Set<string>,
+): boolean {
+  const player = game[side]
+  const pawnCost = game.rules.costs.P
+  const cost = game.rules.costs[piece]
+  const pawnCountAfterMove = player.pieces.filter((placed) => placed.type === 'P').length + (piece === 'P' ? 1 : 0)
+  const remainingRequiredPawns = Math.max(game.rules.mandatory_pawns - pawnCountAfterMove, 0)
+  const remainingPoints = player.points_remaining - cost
+
+  if (remainingPoints < remainingRequiredPawns * pawnCost) {
+    return false
+  }
+
+  const occupiedAfterMove = new Set(occupiedSquares)
+  occupiedAfterMove.add(square)
+  const pawnSquares = getSquaresForRanks(game.rules.pawn_ranks[side])
+  const remainingPawnSquares = pawnSquares.filter((candidate) => !occupiedAfterMove.has(candidate)).length
+
+  return remainingPawnSquares >= remainingRequiredPawns
+}
+
+function canPlacePieceTypeNow(game: GameState, piece: PieceType): boolean {
+  if (game.phase !== 'setup') {
+    return false
+  }
+
+  if (piece === 'K') {
+    const player = game[game.setup_turn]
+    const pawnsPlaced = player.pieces.filter((placed) => placed.type === 'P').length
+    const hasMinimumPawns = pawnsPlaced >= game.rules.mandatory_pawns
+    const spendingComplete = player.finished_spending || player.points_remaining === 0
+    return !player.king_square && hasMinimumPawns && spendingComplete
+  }
+
+  const player = game[game.setup_turn]
+  if (player.finished_spending) {
+    return false
+  }
+
+  const cost = game.rules.costs[piece]
+  if (cost > player.points_remaining) {
+    return false
+  }
+
+  const candidateRanks = piece === 'P' ? game.rules.pawn_ranks[game.setup_turn] : game.rules.non_king_ranks[game.setup_turn]
+  const occupiedSquares = getOccupiedSquares(game)
+  const legalSquares = getSquaresForRanks(candidateRanks).filter((square) => !occupiedSquares.has(square))
+
+  if (legalSquares.length === 0) {
+    return false
+  }
+
+  return legalSquares.some((square) =>
+    canKeepPawnPathViable(game, game.setup_turn, piece, square, occupiedSquares),
+  )
+}
+
 export function Sidebar({
   game,
   selectedPiece,
@@ -64,6 +148,7 @@ export function Sidebar({
     piece,
     label: PIECE_LABELS[piece],
     cost: game.rules.costs[piece],
+    enabled: canPlacePieceTypeNow(game, piece),
   }))
 
   return (
@@ -118,10 +203,10 @@ export function Sidebar({
           Previewing {activeSideLabel}
         </div>
         <div className="piece-grid">
-          {pieceOptions.map(({ piece, label, cost }) => {
+          {pieceOptions.map(({ piece, label, cost, enabled }) => {
             const isKingTile = piece === 'K'
             const isSelected = isKingTile ? isKingPlacementMode : selectedPiece === piece && !isKingPlacementMode
-            const isLocked = isKingTile ? (!canPlaceKing || !canInteract) : !canInteract
+            const isLocked = !enabled
 
             return (
             <button
@@ -136,9 +221,17 @@ export function Sidebar({
               </span>
               <span className="piece-button-copy">
                 <strong>{label}</strong>
-                <span>{isKingTile ? (canPlaceKing && isSetupActive ? 'Ready' : 'Locked') : `${cost} pts`}</span>
+                <span>
+                  {isKingTile
+                    ? enabled
+                      ? 'Ready'
+                      : 'Locked'
+                    : enabled
+                      ? `${cost} pts`
+                      : 'Unavailable'}
+                </span>
               </span>
-              {isKingTile && !canPlaceKing ? <span className="piece-lock-badge">Locked</span> : null}
+              {isLocked ? <span className="piece-lock-badge">{isKingTile ? 'Locked' : 'Unavailable'}</span> : null}
             </button>
             )
           })}
