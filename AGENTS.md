@@ -1,92 +1,118 @@
 # Automate Chess agent instructions
 
-## Project priorities
+## Project context
 This repo is a browser-based Automate-style chess variant.
 
-Current priorities:
-1. polish and stabilize the existing setup -> autoplay flow
-2. improve visual consistency, especially light mode
-3. harden state transitions and interaction reliability
-4. preserve the current premium grayscale aesthetic
+Current state:
+- local 2-player setup mode works
+- setup rules and autoplay/replay flow work
+- UI is in a good state
+- next milestone is solo bot setup mode
 
-Do NOT expand scope into:
-- multiplayer
-- public matchmaking
-- accounts/auth
-- setup bots
-- database persistence
-- deployment/infrastructure changes
-unless explicitly asked.
+## Current objective
+Implement solo-vs-bot mode for setup only.
+
+The human should be able to choose White, Black, or Random.
+The bot should take setup turns for the opposing side.
+After setup is complete, the existing autoplay/replay flow should run unchanged.
 
 ## Non-negotiables
-- Backend remains source of truth for legality.
-- Do not change game rules unless fixing a real bug or impossible state.
-- Do not redesign the whole app.
-- Preserve the current layout direction unless a change clearly improves density/usability.
-- Do not remove working features to simplify implementation.
-- Keep the board large and visually dominant.
-- Maintain dark mode as the primary visual baseline and make light mode intentionally tuned, not just inverted.
+- Backend is the source of truth for legality.
+- Do not change core game rules unless fixing a real bug.
+- Do not redesign the app.
+- Do not implement multiplayer in this sprint.
+- Do not implement accounts, persistence, deployment work, or public lobbies.
+- Do not introduce major dependencies unless clearly justified.
+- Keep the current premium board-first UI direction intact.
+
+## Bot rules
+The bot is only responsible for setup actions.
+
+It must always respect:
+- budget
+- mandatory pawn requirements
+- legal square restrictions
+- king-last rule
+- impossible-state prevention already enforced by backend
+- existing setup/action model
+
+The bot must never:
+- create illegal positions
+- create impossible-to-finish states
+- bypass backend validation
+- place kings early
+- break autoplay
+
+## Scope for this sprint
+Build only:
+1. solo-vs-bot mode
+2. side selection for the human: White / Black / Random
+3. backend easy bot for setup turns
+4. frontend bot-turn handling / disabled state while bot acts
+5. tests for legality and setup completion
+6. progress logging in `BOT_PROGRESS.md`
+
+## Easy bot expectations
+This sprint is easy difficulty only.
+
+That means:
+- legal only
+- reliable
+- simple heuristics are okay
+- some randomness is good
+- variation is good
+- intelligence is less important than correctness
+
+Suggested behavior:
+- enumerate legal candidate setup actions
+- heavily prefer satisfying mandatory pawns early
+- avoid obviously silly king placement
+- mildly prefer reasonable squares when possible
+- choose among legal weighted candidates
 
 ## Code quality
 - Prefer small, focused changes.
-- Keep components modular.
-- Do not introduce large dependencies unless clearly justified.
-- Add or update tests when fixing backend logic or fragile interaction flows.
-- Avoid dead code and one-off hacks.
+- Reuse existing rules/service layers.
+- Do not duplicate backend rule logic unnecessarily.
+- Keep bot logic in dedicated backend modules/services.
+- Keep frontend changes minimal and consistent with the current UI.
+- Add/update tests for backend logic and setup progression.
 
-## Overnight sprint goals
-Work only on:
-1. light mode contrast correction and piece readability
-2. logo/header refinement and top-level info density
-3. replay/result semantics and no-spoiler guarantees
-4. king-placement reliability and in-flight interaction locking
-5. autoplay/replay polish:
-   - clickable move list reliability
-   - current move visibility/highlighting
-   - spacing/density cleanup
-   - skip simulation behavior
-6. UI consistency across states:
-   - setup
-   - calculating
-   - autoplay running
-   - paused
-   - replay complete
+## Required outputs
+Create/update:
+- `BOT_PROGRESS.md`
 
-## Result semantics
-- During setup: no winner/result shown
-- During calculating: result unknown/pending
-- During autoplay animation: result unknown/pending
-- When replay reaches final ply: reveal White wins / Black wins / Draw and keep it visible
-
-## Light mode requirements
-- White pieces must remain readable on light squares
-- Black pieces must remain readable on dark squares
-- Board square values must have stronger separation than they currently do
-- Panels/cards/overlays need explicit light-mode tuning, not simple inversion
-- Preserve premium feel in light mode
-
-## Branding requirements
-- Keep the wordmark "AUTOMATE CHESS"
-- Improve the icon/mark with a cleaner knight/cog-style idea if possible
-- Keep it minimal, monochrome, and implementable
-- Do not make it cartoonish
+It should contain:
+- initial plan
+- milestones completed
+- files changed
+- what passed
+- what still needs manual QA
+- recommended next milestone
 
 ## Stop conditions
 Stop and report instead of continuing if:
 - backend tests fail and cannot be fixed confidently
-- `npm run build` fails and cannot be fixed confidently
-- king placement or autoplay flow becomes unreliable
-- a change requires redesigning major architecture
-- a change would require introducing multiplayer logic
-- light mode still breaks board/piece readability after a reasonable pass
+- frontend build fails and cannot be fixed confidently
+- bot cannot be made reliable without changing core rules
+- a change would require multiplayer architecture
+- a change would require a broad UI redesign
+- autoplay flow becomes unstable
 
-## Required validation before stopping
-Before finishing, run:
-- backend tests
-- frontend build
+## Validation required before stopping
+Run:
+- `cd server && .venv/bin/pytest -q`
+- `cd client && npm run build`
 
-And summarize:
+Before finishing, summarize:
 - files changed
-- what was fixed
-- what remains imperfect
-- any risks or regressions to watch
+- what was implemented
+- what still needs manual QA
+- any known limitations in the easy bot
+
+## After this sprint
+The next milestone should likely be one of:
+- medium bot heuristics
+- multiplayer room-code mode
+
+Do not start either unless explicitly asked.
