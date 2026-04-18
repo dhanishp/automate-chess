@@ -1,10 +1,23 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.game.models import ActionRequest, ApiResponse, CreateSoloGameRequest
 from app.game.rules import RuleViolation
 from app.game.service import service
 
 app = FastAPI(title="Automate Chess API", version="0.1.0")
+
+# Local frontend dev runs on Vite, so allow those origins during development.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")

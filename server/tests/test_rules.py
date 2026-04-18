@@ -94,6 +94,26 @@ def test_finish_setup_allows_king_if_pawn_requirement_met() -> None:
     assert game.white.king_square == "g1"
 
 
+def test_finish_setup_rejects_early_when_mandatory_pawns_are_missing() -> None:
+    game = build_game()
+
+    engine.apply_action(
+        game,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square="a2"),
+    )
+    engine.apply_action(
+        game,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.PAWN, square="a7"),
+    )
+
+    try:
+        engine.apply_action(game, ActionRequest(action_type=ActionType.FINISH_SETUP, side=Side.WHITE))
+    except RuleViolation as exc:
+        assert "at least 6 pawns" in str(exc)
+    else:
+        raise AssertionError("Expected early finish to fail.")
+
+
 
 def test_king_cannot_be_placed_before_finish_or_zero_points() -> None:
     game = build_game()

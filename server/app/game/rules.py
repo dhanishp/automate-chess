@@ -75,6 +75,10 @@ class AutomateRulesEngine:
         player = game.player(side)
         if player.finished_spending:
             raise RuleViolation("This player already finished spending.")
+        if player.mandatory_pawn_count < game.rules.mandatory_pawns:
+            raise RuleViolation(
+                f"{side.value.capitalize()} must place at least {game.rules.mandatory_pawns} pawns before finishing setup."
+            )
         player.finished_spending = True
         game.event_log.append(f"{side.value} finished spending with {player.points_remaining} points remaining")
 
