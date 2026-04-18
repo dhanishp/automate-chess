@@ -18,6 +18,9 @@ interface SidebarProps {
   selectedPieceLabel: string
   isKingPlacementMode: boolean
   isSetupActive: boolean
+  isBotGame: boolean
+  humanSideLabel: string | null
+  isHumanSetupTurn: boolean
   errorMessage: string | null
   blockingMessage: string | null
   pendingActionLabel: string | null
@@ -29,6 +32,7 @@ interface SidebarProps {
   onFinishSetup: () => void
   onRefresh: () => void
   onLoadSample: () => void
+  onBackToMenu: () => void
   statusTone: 'setup' | 'autoplay' | 'complete'
 }
 
@@ -131,6 +135,9 @@ export function Sidebar({
   selectedPieceLabel,
   isKingPlacementMode,
   isSetupActive,
+  isBotGame,
+  humanSideLabel,
+  isHumanSetupTurn,
   errorMessage,
   blockingMessage,
   pendingActionLabel,
@@ -142,12 +149,18 @@ export function Sidebar({
   onFinishSetup,
   onRefresh,
   onLoadSample,
+  onBackToMenu,
   statusTone,
 }: SidebarProps) {
   const activePlayer = game[game.setup_turn]
-  const canInteract = isSetupActive && pendingActionLabel === null
+  const canInteract = isSetupActive && pendingActionLabel === null && (!isBotGame || isHumanSetupTurn)
   const activeSideLabel = formatSide(game.setup_turn)
   const isLivePhase = isSetupActive
+  const turnSummary = isBotGame
+    ? isHumanSetupTurn
+      ? `Your turn as ${activeSideLabel}`
+      : `Easy bot is placing for ${activeSideLabel}`
+    : `${activeSideLabel} to move`
   const pieceOptions = (['P', 'N', 'B', 'R', 'Q', 'K'] as PieceType[]).map((piece) => ({
     piece,
     label: PIECE_LABELS[piece],
@@ -170,7 +183,7 @@ export function Sidebar({
 
         <div className="status-line">
           <span className={`live-dot tone-${statusTone} ${isLivePhase ? 'on' : ''}`} />
-          <strong>{isSetupActive ? `${activeSideLabel} to move` : 'Setup interactions disabled'}</strong>
+          <strong>{isSetupActive ? turnSummary : 'Setup interactions disabled'}</strong>
           <span className={`status-chip tone-${statusTone}`}>{isLivePhase ? 'Live phase' : 'Locked'}</span>
         </div>
 
@@ -179,6 +192,18 @@ export function Sidebar({
             <span>Selected</span>
             <strong>{selectedPieceLabel}</strong>
           </div>
+          {isBotGame ? (
+            <div className="metric-card">
+              <span>You</span>
+              <strong>{humanSideLabel ?? 'Random'}</strong>
+            </div>
+          ) : null}
+          {isBotGame ? (
+            <div className="metric-card">
+              <span>Mode</span>
+              <strong>Solo vs Bot</strong>
+            </div>
+          ) : null}
           <div className="metric-card">
             <span>White points</span>
             <strong>{game.white.points_remaining}</strong>
@@ -201,7 +226,11 @@ export function Sidebar({
             <h2>Choose Formation</h2>
           </div>
         </div>
-        <p className="panel-copy">Select a piece, then click a square on the board. Shop previews currently show the {activeSideLabel.toLowerCase()} side.</p>
+        <p className="panel-copy">
+          {isBotGame && !isHumanSetupTurn
+            ? `The bot is acting for ${activeSideLabel.toLowerCase()}. Piece selection will unlock again when your next setup turn starts.`
+            : `Select a piece, then click a square on the board. Shop previews currently show the ${activeSideLabel.toLowerCase()} side.`}
+        </p>
         <div className="shop-preview-badge">
           <span className="shop-preview-dot" />
           Previewing {activeSideLabel}
@@ -321,11 +350,27 @@ export function Sidebar({
             >
               Load sample setup
             </button>
+            <button
+              type="button"
+              className="button ghost secondary-utility-button"
+              onClick={onBackToMenu}
+              disabled={pendingActionLabel !== null}
+            >
+              Back to menu
+            </button>
           </>
         ) : (
-          <p className="hint-message">Setup is complete. Autoplay has not been implemented yet, so this screen is intentionally read-only now.</p>
+          <>
+            <p className="hint-message">Setup is complete. Autoplay has not been implemented yet, so this screen is intentionally read-only now.</p>
+            <button type="button" className="button ghost secondary-utility-button" onClick={onBackToMenu}>
+              Back to menu
+            </button>
+          </>
         )}
 
+        {isBotGame && isSetupActive && !isHumanSetupTurn && !pendingActionLabel ? (
+          <p className="status-message">Easy bot is taking its setup turn. Human controls will unlock automatically after the bot responds.</p>
+        ) : null}
         {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
         {blockingMessage ? <p className="warning-message">{blockingMessage}</p> : null}
         {errorMessage ? <p className="error-message">{errorMessage}</p> : null}

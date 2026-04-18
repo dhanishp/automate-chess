@@ -94,6 +94,38 @@ def test_finish_setup_allows_king_if_pawn_requirement_met() -> None:
     assert game.white.king_square == "g1"
 
 
+def test_turn_advances_past_side_that_already_completed_setup() -> None:
+    game = build_game()
+    white_squares = ["a2", "b2", "c2", "d2", "e2", "f2"]
+    black_squares = ["a7", "b7", "c7", "d7", "e7", "f7"]
+
+    for white_square, black_square in zip(white_squares, black_squares):
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square=white_square),
+        )
+        engine.apply_action(
+            game,
+            ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.PAWN, square=black_square),
+        )
+
+    engine.apply_action(game, ActionRequest(action_type=ActionType.FINISH_SETUP, side=Side.WHITE))
+    engine.apply_action(
+        game,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.KNIGHT, square="g8"),
+    )
+    engine.apply_action(game, ActionRequest(action_type=ActionType.PLACE_KING, side=Side.WHITE, square="g1"))
+
+    assert game.setup_turn == Side.BLACK
+
+    engine.apply_action(
+        game,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.BLACK, piece_type=PieceType.BISHOP, square="h8"),
+    )
+
+    assert game.setup_turn == Side.BLACK
+
+
 def test_finish_setup_rejects_early_when_mandatory_pawns_are_missing() -> None:
     game = build_game()
 

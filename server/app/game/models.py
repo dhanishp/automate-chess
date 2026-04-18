@@ -23,6 +23,17 @@ class Phase(str, Enum):
     RESULTS = "results"
 
 
+class GameMode(str, Enum):
+    LOCAL = "local"
+    BOT = "bot"
+
+
+class HumanSideChoice(str, Enum):
+    WHITE = "white"
+    BLACK = "black"
+    RANDOM = "random"
+
+
 class AutoplayStatus(str, Enum):
     NOT_READY = "not_ready"
     RUNNING = "running"
@@ -91,6 +102,9 @@ class GameRules(BaseModel):
 
 class GameState(BaseModel):
     game_id: str = Field(default_factory=lambda: uuid4().hex[:10])
+    mode: GameMode = GameMode.LOCAL
+    human_side: Side | None = None
+    bot_side: Side | None = None
     phase: Phase = Phase.SETUP
     setup_turn: Side = Side.WHITE
     white: PlayerSetupState = Field(
@@ -117,10 +131,14 @@ class GameState(BaseModel):
 class CreateSoloGameRequest(BaseModel):
     white_name: str = "White"
     black_name: str = "Bot"
+    mode: GameMode = GameMode.LOCAL
+    human_side: HumanSideChoice = HumanSideChoice.WHITE
 
 
 class CreateSampleGameRequest(BaseModel):
     preset_id: str = "quickstart"
+    mode: GameMode = GameMode.LOCAL
+    human_side: HumanSideChoice = HumanSideChoice.WHITE
 
 
 class ActionRequest(BaseModel):

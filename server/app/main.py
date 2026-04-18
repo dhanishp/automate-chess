@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.game.bot import BotMoveError
 from app.game.engine import EngineError, EngineUnavailableError
 from app.game.models import ActionRequest, ApiResponse, CreateSampleGameRequest, CreateSoloGameRequest
 from app.game.presets import PresetNotFoundError
@@ -36,7 +37,7 @@ def create_solo_game(request: CreateSoloGameRequest) -> ApiResponse:
 @app.post("/games/sample", response_model=ApiResponse)
 def create_sample_game(request: CreateSampleGameRequest) -> ApiResponse:
     try:
-        game = service.create_sample_game(request.preset_id)
+        game = service.create_sample_game(request)
     except PresetNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ApiResponse(message="Sample game created.", game=game)
@@ -59,6 +60,8 @@ def apply_action(game_id: str, request: ActionRequest) -> ApiResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuleViolation as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except BotMoveError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EngineError as exc:

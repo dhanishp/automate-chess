@@ -9,7 +9,9 @@ import {
   createSampleGame,
   createSoloGame,
   getGame,
+  type GameMode,
   type GameState,
+  type HumanSideChoice,
   type PieceType,
   type Side,
 } from '../lib/api'
@@ -17,6 +19,7 @@ import {
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const
 const SESSION_STORAGE_GAME_KEY = 'automate-chess-game-id'
 const THEME_STORAGE_KEY = 'automate-chess-theme'
+const BOT_THINK_DELAY_MS = 700
 const PIECE_LABELS: Record<PieceType, string> = {
   P: 'Pawn',
   N: 'Knight',
@@ -26,9 +29,9 @@ const PIECE_LABELS: Record<PieceType, string> = {
   K: 'King',
 }
 
-let bootstrapPromise: Promise<GameState> | null = null
+let bootstrapPromise: Promise<GameState | null> | null = null
 
-function getInitialGame(): Promise<GameState> {
+function getInitialGame(): Promise<GameState | null> {
   if (!bootstrapPromise) {
     bootstrapPromise = (async () => {
       const existingGameId = window.sessionStorage.getItem(SESSION_STORAGE_GAME_KEY)
@@ -41,10 +44,7 @@ function getInitialGame(): Promise<GameState> {
           window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
         }
       }
-
-      const response = await createSoloGame()
-      window.sessionStorage.setItem(SESSION_STORAGE_GAME_KEY, response.game.game_id)
-      return response.game
+      return null
     })().finally(() => {
       bootstrapPromise = null
     })
@@ -110,6 +110,16 @@ function formatReplayResult(result: string | null | undefined): string {
   }
 }
 
+function formatModeLabel(mode: GameMode): string {
+  return mode === 'bot' ? 'Solo vs Bot' : 'Solo Sandbox'
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
 function getPreferredTheme(): AppTheme {
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
   return stored === 'light' ? 'light' : 'dark'
@@ -171,10 +181,12 @@ function getActivePlayerStatus(game: GameState) {
 
 export function App() {
   const [game, setGame] = useState<GameState | null>(null)
+  const [gameSetupMode, setGameSetupMode] = useState<GameMode>('local')
+  const [humanSideChoice, setHumanSideChoice] = useState<HumanSideChoice>('white')
   const [selectedPiece, setSelectedPiece] = useState<PieceType | null>('P')
   const [isKingPlacementMode, setIsKingPlacementMode] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [loadingMessage, setLoadingMessage] = useState('Creating solo game...')
+  const [loadingMessage, setLoadingMessage] = useState('Loading saved game...')
   const [pendingActionLabel, setPendingActionLabel] = useState<string | null>(null)
   const [isCalculatingAutoplay, setIsCalculatingAutoplay] = useState(false)
   const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
@@ -238,6 +250,9 @@ export function App() {
     }
   }, [game, isKingPlacementMode])
 
+  const isBotGame = game?.mode === 'bot'
+  const isHumanSetupTurn = !!game && (!isBotGame || game.human_side === game.setup_turn)
+
   async function refreshGame() {
     if (!game || actionInFlightRef.current) {
       return
@@ -258,9 +273,24 @@ export function App() {
     }
   }
 
-  async function startNewGame() {
+  function backToMenu() {
     actionInFlightRef.current = false
-    setLoadingMessage('Creating solo game...')
+    window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+    setGame(null)
+    setGameSetupMode('local')
+    setHumanSideChoice('white')
+    setSelectedPiece('P')
+    setIsKingPlacementMode(false)
+    setErrorMessage(null)
+    setLoadingMessage('')
+    setPendingActionLabel(null)
+    setIsCalculatingAutoplay(false)
+    setReplayFinished(false)
+  }
+
+  async function startNewGame(mode: GameMode = 'local', sideChoice: HumanSideChoice = 'white') {
+    actionInFlightRef.current = false
+    setLoadingMessage(mode === 'bot' ? 'Creating solo vs bot game...' : 'Creating solo game...')
     setPendingActionLabel(null)
     setErrorMessage(null)
     setIsKingPlacementMode(false)
@@ -269,7 +299,13 @@ export function App() {
     setReplayFinished(false)
 
     try {
-      const response = await createSoloGame()
+      const response = await (
+        mode === 'bot'
+          ? Promise.all([createSoloGame({ mode, human_side: sideChoice }), delay(BOT_THINK_DELAY_MS)]).then(
+              ([apiResponse]) => apiResponse,
+            )
+          : createSoloGame({ mode, human_side: sideChoice })
+      )
       window.sessionStorage.setItem(SESSION_STORAGE_GAME_KEY, response.game.game_id)
       setGame(response.game)
       setLoadingMessage('')
@@ -290,7 +326,10 @@ export function App() {
     setReplayFinished(false)
 
     try {
-      const response = await createSampleGame()
+      const response = await createSampleGame({
+        mode: game?.mode ?? 'local',
+        human_side: game?.human_side ?? humanSideChoice,
+      })
       window.sessionStorage.setItem(SESSION_STORAGE_GAME_KEY, response.game.game_id)
       setGame(response.game)
       setLoadingMessage('')
@@ -317,12 +356,19 @@ export function App() {
       game[payload.side === 'white' ? 'black' : 'white'].king_square !== null
 
     actionInFlightRef.current = true
-    setPendingActionLabel(label)
+    const pendingLabel = isBotGame ? `${label} Waiting for bot response...` : label
+    setPendingActionLabel(pendingLabel)
     setErrorMessage(null)
     setIsCalculatingAutoplay(triggersAutoplay)
 
     try {
-      const response = await applyAction(game.game_id, payload)
+      const response = await (
+        isBotGame
+          ? Promise.all([applyAction(game.game_id, payload), delay(BOT_THINK_DELAY_MS)]).then(
+              ([apiResponse]) => apiResponse,
+            )
+          : applyAction(game.game_id, payload)
+      )
       setGame(response.game)
       setIsKingPlacementMode(false)
     } catch (error) {
@@ -335,7 +381,7 @@ export function App() {
   }
 
   async function handleSquareClick(square: string) {
-    if (!game || pendingActionLabel || actionInFlightRef.current) {
+    if (!game || pendingActionLabel || actionInFlightRef.current || !isHumanSetupTurn) {
       return
     }
 
@@ -368,7 +414,7 @@ export function App() {
   }
 
   function handleSelectPiece(piece: PieceType) {
-    if (!game || game.phase !== 'setup' || pendingActionLabel || actionInFlightRef.current) {
+    if (!game || game.phase !== 'setup' || pendingActionLabel || actionInFlightRef.current || !isHumanSetupTurn) {
       return
     }
 
@@ -384,7 +430,7 @@ export function App() {
   }
 
   async function handleFinishSetup() {
-    if (!game || actionInFlightRef.current) {
+    if (!game || actionInFlightRef.current || !isHumanSetupTurn) {
       return
     }
 
@@ -400,16 +446,78 @@ export function App() {
   const boardSquares = useMemo(() => (game ? buildBoard(game) : []), [game])
 
   if (!game) {
+    const isBootstrapping = Boolean(loadingMessage)
+
     return (
       <div className="shell loading-shell">
-        <div className="panel loading-panel">
-          <h1>Automate Chess</h1>
-          <p>{loadingMessage || 'Loading game state...'}</p>
+        <div className="panel loading-panel premium-card launcher-panel">
+          <div>
+            <p className="eyebrow">New Challenge</p>
+            <h1>Automate Chess</h1>
+            <p className="launcher-copy">
+              Choose a local sandbox or a solo-vs-bot setup game. The bot handles only setup turns; finished positions still resolve through the existing autoplay replay.
+            </p>
+          </div>
+
+          {isBootstrapping ? (
+            <p>{loadingMessage}</p>
+          ) : (
+            <div className="launcher-controls">
+              <div className="launcher-group">
+                <span className="launcher-label">Mode</span>
+                <div className="launcher-choice-row">
+                  <button
+                    type="button"
+                    className={`choice-pill ${gameSetupMode === 'local' ? 'selected' : ''}`}
+                    onClick={() => setGameSetupMode('local')}
+                  >
+                    Solo Sandbox
+                  </button>
+                  <button
+                    type="button"
+                    className={`choice-pill ${gameSetupMode === 'bot' ? 'selected' : ''}`}
+                    onClick={() => setGameSetupMode('bot')}
+                  >
+                    Solo vs Bot
+                  </button>
+                </div>
+              </div>
+
+              {gameSetupMode === 'bot' ? (
+                <div className="launcher-group">
+                  <span className="launcher-label">Human Side</span>
+                  <div className="launcher-choice-row">
+                    {(['white', 'black', 'random'] as HumanSideChoice[]).map((sideChoice) => (
+                      <button
+                        key={sideChoice}
+                        type="button"
+                        className={`choice-pill ${humanSideChoice === sideChoice ? 'selected' : ''}`}
+                        onClick={() => setHumanSideChoice(sideChoice)}
+                      >
+                        {sideChoice[0].toUpperCase() + sideChoice.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <button
+                type="button"
+                className="button primary launcher-start-button"
+                onClick={() => {
+                  void startNewGame(gameSetupMode, humanSideChoice)
+                }}
+              >
+                Start {formatModeLabel(gameSetupMode)}
+              </button>
+            </div>
+          )}
+
           {errorMessage ? (
             <>
               <p className="error-message">{errorMessage}</p>
-              <button type="button" className="button primary" onClick={() => window.location.reload()}>
-                Retry
+              <button type="button" className="button ghost" onClick={() => window.location.reload()}>
+                Retry restore
               </button>
             </>
           ) : null}
@@ -419,12 +527,17 @@ export function App() {
   }
 
   const isSetupActive = game.phase === 'setup'
+  const botTurnActive = isSetupActive && isBotGame && !isHumanSetupTurn
   const selectedModeLabel = !isSetupActive
     ? game.phase === 'ready_for_autoplay'
       ? 'Setup complete'
+      : botTurnActive
+        ? 'Bot is choosing a setup move'
       : formatPhaseLabel(game.phase)
     : isKingPlacementMode
       ? `King placement for ${game.setup_turn}`
+      : botTurnActive
+        ? `${game.bot_side} bot to move`
       : selectedPiece
         ? `${game.setup_turn} placing ${PIECE_LABELS[selectedPiece]}`
         : 'Select a piece'
@@ -440,8 +553,8 @@ export function App() {
   const autoplayReady = game.phase === 'autoplay' && game.autoplay.status === 'ready' && !!game.autoplay.initial_fen
   const autoplayPhase = game.phase === 'autoplay'
   const phaseBadge = readyForAutoplay ? 'Setup Complete' : formatPhaseLabel(game.phase)
-  const setupHeaderSecondary = isSetupActive ? undefined : 'Setup Locked'
   const headerTone = getHeaderTone(game)
+  const humanSideLabel = game.human_side ? game.human_side[0].toUpperCase() + game.human_side.slice(1) : null
 
   if (autoplayReady) {
     const outcomeLabel = replayFinished ? formatReplayResult(game.autoplay.result ?? game.result) : 'Pending Result'
@@ -460,8 +573,9 @@ export function App() {
             void refreshGame()
           }}
           onNewGame={() => {
-            void startNewGame()
+            void startNewGame(game.mode, game.human_side ?? 'white')
           }}
+          onBackToMenu={backToMenu}
           outcomeKnown={replayFinished}
           onOutcomeReveal={() => setReplayFinished(true)}
         />
@@ -555,6 +669,9 @@ export function App() {
 
               {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
               {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
+              <button type="button" className="button ghost secondary-utility-button" onClick={backToMenu}>
+                Back to menu
+              </button>
             </section>
           </aside>
         </main>
@@ -621,6 +738,9 @@ export function App() {
                       >
                         Refresh replay state
                       </button>
+                      <button type="button" className="button ghost" onClick={backToMenu}>
+                        Back to menu
+                      </button>
                     </section>
                   </div>
                 </div>
@@ -636,7 +756,6 @@ export function App() {
     <div className="shell">
       <AppHeader
         primaryPill={phaseBadge}
-        secondaryPill={setupHeaderSecondary}
         tone={headerTone}
         theme={theme}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -665,7 +784,7 @@ export function App() {
             <section className="panel board-panel premium-card">
               <Board
                 activeSide={game.setup_turn}
-                interactive={isSetupActive && pendingActionLabel === null}
+                interactive={isSetupActive && isHumanSetupTurn && pendingActionLabel === null}
                 selectedSquare={null}
                 selectedModeLabel={selectedModeLabel}
                 squares={boardSquares}
@@ -690,6 +809,9 @@ export function App() {
           canPlaceKing={activePlayerStatus.canPlaceKing}
           finishSetupReason={activePlayerStatus.finishSetupReason}
           kingPlacementReason={activePlayerStatus.kingPlacementReason}
+          isBotGame={isBotGame}
+          humanSideLabel={humanSideLabel}
+          isHumanSetupTurn={isHumanSetupTurn}
           onSelectPiece={handleSelectPiece}
           onFinishSetup={() => {
             void handleFinishSetup()
@@ -700,6 +822,7 @@ export function App() {
           onLoadSample={() => {
             void loadSampleGame()
           }}
+          onBackToMenu={backToMenu}
           statusTone={headerTone}
         />
       </main>

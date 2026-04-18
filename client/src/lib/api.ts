@@ -1,6 +1,8 @@
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000'
 
 export type Side = 'white' | 'black'
+export type GameMode = 'local' | 'bot'
+export type HumanSideChoice = 'white' | 'black' | 'random'
 export type Phase = 'setup' | 'ready_for_autoplay' | 'autoplay' | 'results'
 export type ActionType = 'place_piece' | 'finish_setup' | 'place_king'
 export type PieceType = 'P' | 'N' | 'B' | 'R' | 'Q' | 'K'
@@ -33,6 +35,9 @@ export interface GameRules {
 
 export interface GameState {
   game_id: string
+  mode: GameMode
+  human_side: Side | null
+  bot_side: Side | null
   phase: Phase
   setup_turn: Side
   white: PlayerSetupState
@@ -68,10 +73,14 @@ export interface ApiResponse {
 export interface CreateSoloGameRequest {
   white_name?: string
   black_name?: string
+  mode?: GameMode
+  human_side?: HumanSideChoice
 }
 
 export interface CreateSampleGameRequest {
   preset_id?: string
+  mode?: GameMode
+  human_side?: HumanSideChoice
 }
 
 export interface ActionRequest {

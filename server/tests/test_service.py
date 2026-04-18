@@ -1,5 +1,15 @@
 from app.game.engine import EngineUnavailableError
-from app.game.models import ActionRequest, ActionType, AutoplayState, AutoplayStatus, CreateSoloGameRequest, ReplayMove
+from app.game.models import (
+    ActionRequest,
+    ActionType,
+    AutoplayState,
+    AutoplayStatus,
+    CreateSampleGameRequest,
+    CreateSoloGameRequest,
+    GameMode,
+    HumanSideChoice,
+    ReplayMove,
+)
 from app.game.service import GameService
 
 
@@ -111,3 +121,32 @@ def test_create_sample_game_is_mid_setup_sandbox() -> None:
         ActionRequest(action_type=ActionType.PLACE_PIECE, side="black", piece_type="Q", square="d8"),
     )
     assert continued.setup_turn == "white"
+
+
+def test_create_sample_game_preserves_bot_mode_when_human_is_white() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+
+    game = service.create_sample_game(
+        CreateSampleGameRequest(mode=GameMode.BOT, human_side=HumanSideChoice.WHITE)
+    )
+
+    assert game.mode == "bot"
+    assert game.human_side == "white"
+    assert game.bot_side == "black"
+    assert game.setup_turn == "white"
+    assert any("Sample bot mode" in entry for entry in game.event_log)
+
+
+def test_create_sample_game_triggers_bot_turn_when_human_is_black() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+
+    game = service.create_sample_game(
+        CreateSampleGameRequest(mode=GameMode.BOT, human_side=HumanSideChoice.BLACK)
+    )
+
+    assert game.mode == "bot"
+    assert game.human_side == "black"
+    assert game.bot_side == "white"
+    assert game.setup_turn == "black"
+    assert len(game.white.pieces) > 9
+    assert any("Sample bot mode" in entry for entry in game.event_log)

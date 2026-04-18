@@ -122,13 +122,22 @@ class AutomateRulesEngine:
             game.phase = Phase.READY_FOR_AUTOPLAY
             game.event_log.append("Both kings placed. Game is ready for autoplay.")
             return
-        game.setup_turn = game.setup_turn.opposite
+        next_side = game.setup_turn.opposite
+        if self._side_setup_complete(game, next_side) and not self._side_setup_complete(game, next_side.opposite):
+            game.setup_turn = next_side.opposite
+            return
+        game.setup_turn = next_side
 
     def _can_place_king(self, game: GameState, side: Side) -> bool:
         player = game.player(side)
         has_minimum_pawns = player.mandatory_pawn_count >= game.rules.mandatory_pawns
         spending_complete = player.finished_spending or player.points_remaining == 0
         return has_minimum_pawns and spending_complete
+
+    def _side_setup_complete(self, game: GameState, side: Side) -> bool:
+        player = game.player(side)
+        spending_complete = player.finished_spending or player.points_remaining == 0
+        return spending_complete and player.king_square is not None
 
     def _king_in_check_after_placement(self, game: GameState, side: Side, square: str) -> bool:
         board = chess.Board(None)

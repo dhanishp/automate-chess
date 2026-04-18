@@ -5,14 +5,15 @@ import type { GameState } from '../lib/api'
 
 const PLAYBACK_SPEEDS = [
   { label: 'Slow', delayMs: 2200 },
-  { label: 'Normal', delayMs: 1700 },
-  { label: 'Fast', delayMs: 950 },
+  { label: 'Normal', delayMs: 1350 },
+  { label: 'Fast', delayMs: 550 },
 ] as const
 
 interface AutoplayViewerProps {
   game: GameState
   onRefresh: () => void
   onNewGame: () => void
+  onBackToMenu: () => void
   outcomeKnown: boolean
   onOutcomeReveal: () => void
 }
@@ -30,11 +31,12 @@ function formatReplayResult(result: string | null | undefined): string {
   }
 }
 
-export function AutoplayViewer({ game, onRefresh, onNewGame, outcomeKnown, onOutcomeReveal }: AutoplayViewerProps) {
+export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outcomeKnown, onOutcomeReveal }: AutoplayViewerProps) {
   const [currentPly, setCurrentPly] = useState(0)
   const [isPlaying, setIsPlaying] = useState(true)
   const [speedLabel, setSpeedLabel] = useState<(typeof PLAYBACK_SPEEDS)[number]['label']>('Normal')
   const activeMoveRef = useRef<HTMLButtonElement | null>(null)
+  const moveListRef = useRef<HTMLOListElement | null>(null)
   const moves = game.autoplay.moves
   const totalPlies = moves.length
   const currentFen = currentPly === 0 ? game.autoplay.initial_fen : moves[currentPly - 1]?.fen_after
@@ -57,10 +59,31 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, outcomeKnown, onOut
   }, [onOutcomeReveal, replayFinished])
 
   useEffect(() => {
-    activeMoveRef.current?.scrollIntoView({
-      block: 'nearest',
-      behavior: isPlaying ? 'smooth' : 'auto',
-    })
+    const activeMove = activeMoveRef.current
+    const moveList = moveListRef.current
+    if (!activeMove || !moveList) {
+      return
+    }
+
+    const moveTop = activeMove.offsetTop
+    const moveBottom = moveTop + activeMove.offsetHeight
+    const visibleTop = moveList.scrollTop
+    const visibleBottom = visibleTop + moveList.clientHeight
+
+    if (moveTop < visibleTop) {
+      moveList.scrollTo({
+        top: Math.max(0, moveTop - 8),
+        behavior: isPlaying ? 'smooth' : 'auto',
+      })
+      return
+    }
+
+    if (moveBottom > visibleBottom) {
+      moveList.scrollTo({
+        top: moveBottom - moveList.clientHeight + 8,
+        behavior: isPlaying ? 'smooth' : 'auto',
+      })
+    }
   }, [currentPly, isPlaying])
 
   useEffect(() => {
@@ -153,6 +176,9 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, outcomeKnown, onOut
                       </button>
                       <button type="button" className="button action-button" onClick={onNewGame}>
                         New game
+                      </button>
+                      <button type="button" className="button ghost action-button" onClick={onBackToMenu}>
+                        Back to menu
                       </button>
                     </div>
                   </section>
@@ -280,6 +306,9 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, outcomeKnown, onOut
             >
               Step Forward
             </button>
+            <button type="button" className="button ghost action-button" onClick={onBackToMenu}>
+              Back to Menu
+            </button>
           </div>
         </section>
 
@@ -290,7 +319,7 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, outcomeKnown, onOut
               <h2>Engine Game</h2>
             </div>
           </div>
-          <ol className="move-list">
+          <ol className="move-list" ref={moveListRef}>
             {moves.map((move, index) => (
               <li key={`${move.ply}-${move.uci}`} className={index + 1 === currentPly ? 'active' : ''}>
                 <button
