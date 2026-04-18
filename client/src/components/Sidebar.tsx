@@ -112,7 +112,11 @@ export function Sidebar({
             <h2>Choose Formation</h2>
           </div>
         </div>
-        <p className="panel-copy">Select a piece, then click a square on the board. Backend validation still decides what is legal.</p>
+        <p className="panel-copy">Select a piece, then click a square on the board. Shop previews currently show the {activeSideLabel.toLowerCase()} side.</p>
+        <div className="shop-preview-badge">
+          <span className="shop-preview-dot" />
+          Previewing {activeSideLabel}
+        </div>
         <div className="piece-grid">
           {pieceOptions.map(({ piece, label, cost }) => {
             const isKingTile = piece === 'K'
@@ -128,7 +132,7 @@ export function Sidebar({
               disabled={isLocked}
             >
               <span className="piece-button-icon">
-                <PieceGlyph piece={piece} tone="shop" className="shop-piece" />
+                <PieceGlyph piece={piece} side={game.setup_turn} tone="shop" className="shop-piece" />
               </span>
               <span className="piece-button-copy">
                 <strong>{label}</strong>

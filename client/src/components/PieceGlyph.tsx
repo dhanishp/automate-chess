@@ -33,7 +33,7 @@ export function PieceGlyph({
   className = '',
 }: PieceGlyphProps) {
   return (
-    <span className={`piece-glyph ${tone} ${className}`.trim()} aria-hidden="true">
+    <span className={`piece-glyph ${tone} ${side} ${className}`.trim()} aria-hidden="true">
       {PIECE_SYMBOLS[side][piece]}
     </span>
   )

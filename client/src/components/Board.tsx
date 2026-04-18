@@ -33,6 +33,8 @@ export function Board({
         <strong>{selectedModeLabel}</strong>
       </div>
 
+      <div className="board-side-label top" aria-hidden="true">Black</div>
+
       <div className={`board ${interactive ? 'is-interactive' : ''}`} aria-label="Automate setup board">
         {squares.map((squareData, index) => {
           const rank = 8 - Math.floor(index / 8)
@@ -65,6 +67,8 @@ export function Board({
           )
         })}
       </div>
+
+      <div className="board-side-label bottom" aria-hidden="true">White</div>
     </div>
   )
 }
