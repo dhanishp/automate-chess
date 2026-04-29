@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: automate-chess
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: SERVE_CLIENT_DIST
+        value: "1"
+      - key: STOCKFISH_PATH
+        value: /usr/games/stockfish
+      - key: STOCKFISH_MOVETIME_MS
+        value: "200"
+      - key: STOCKFISH_THREADS
+        value: "1"
+      - key: STOCKFISH_HASH_MB
+        value: "64"
+      - key: STOCKFISH_MAX_PLIES
+        value: "400"

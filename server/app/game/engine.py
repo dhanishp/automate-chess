@@ -128,6 +128,7 @@ class LocalStockfishProvider:
             "/opt/homebrew/bin/stockfish",
             "/usr/local/bin/stockfish",
             "/usr/bin/stockfish",
+            "/usr/games/stockfish",
             "/opt/homebrew/Cellar/stockfish/*/bin/stockfish",
             "/usr/local/Cellar/stockfish/*/bin/stockfish",
         ):
@@ -137,7 +138,8 @@ class LocalStockfishProvider:
     def _missing_engine_message(self) -> str:
         return (
             "Stockfish was not found. Set STOCKFISH_PATH to a local Stockfish binary, "
-            "or install Stockfish in a common location such as /opt/homebrew/bin/stockfish."
+            "or install Stockfish in a common location such as /opt/homebrew/bin/stockfish "
+            "or /usr/games/stockfish."
         )
 
 

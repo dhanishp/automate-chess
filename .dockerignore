@@ -1,0 +1,15 @@
+.git
+.gitignore
+
+client/dist
+client/node_modules
+
+server/.venv
+server/.pytest_cache
+server/app/__pycache__
+server/app/game/__pycache__
+server/tests/__pycache__
+
+**/__pycache__
+**/*.pyc
+.DS_Store
