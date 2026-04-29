@@ -7,15 +7,16 @@ Players build custom chess formations with a points budget, place kings last, an
 ## Current Features
 
 - Local same-device setup / solo sandbox
-- Solo vs easy setup bot with White, Black, or Random human side choice
-- Private room-code multiplayer over WebSockets
+- Singleplayer vs setup bot with White, Black, or Random human side choice
+- Public/private room-code multiplayer over WebSockets, with invite links and Open Games
 - Server-authoritative setup legality and multiplayer turn order
-- Visible alternating setup phase
+- Visible alternating setup phase with legal placement highlights
 - Stockfish-backed autoplay/replay
-- Replay controls with pause, step, speed, restart, skip, and move list
+- Replay controls with pause, step, speed, restart, skip, move list, and copyable replay notation
 - SVG pieces for consistent browser rendering
 - Sample setup preset
 - Light/dark theme
+- Launcher live stats and engine readiness indicator backed by `/ready`
 - LAN runtime mode
 - Docker/Render single-instance deployment path
 
@@ -86,7 +87,7 @@ The Docker image installs Stockfish with apt and sets:
 STOCKFISH_PATH=/usr/games/stockfish
 ```
 
-If Stockfish is missing or fails, solo mode returns a backend error without storing a half-complete replay. Multiplayer stores and broadcasts a shared `failed` autoplay state so both clients can return to menu.
+If Stockfish is missing or fails, solo/local/bot games store a clean failed autoplay state instead of a half-complete replay. Multiplayer stores and broadcasts a shared `failed` autoplay state so both clients can return to menu.
 
 The backend exposes two deployment checks:
 
@@ -195,7 +196,7 @@ npm run build
 - Deployment is single-instance only; do not scale horizontally without shared room state.
 - Rooms disappear on server restart or redeploy.
 - No accounts/auth.
-- No public matchmaking.
+- Open Games is a lightweight list of public waiting rooms, not a persistent matchmaking queue.
 - Replay data is shared in multiplayer, but replay controls are local per client.
 - Free hosting may sleep and cold start.
 - If a Render deploy restarts the service, active rooms are lost.
