@@ -99,6 +99,13 @@ class GameService:
         self._games[game_id] = updated
         return updated
 
+    def stats(self) -> dict[str, int]:
+        active_games = sum(1 for game in self._games.values() if self._is_active_game(game))
+        return {
+            "active_games": active_games,
+            "active_players": active_games,
+        }
+
     def _advance_bot_turns(self, game: GameState) -> GameState:
         game = self._normalize_setup_turn(game)
         while game.mode is GameMode.BOT and game.bot_side is not None and game.phase is Phase.SETUP and game.setup_turn is game.bot_side:
@@ -155,6 +162,15 @@ class GameService:
     def _is_side_setup_complete(self, player) -> bool:  # noqa: ANN001
         spending_complete = player.finished_spending or player.points_remaining == 0
         return spending_complete and player.king_square is not None
+
+    def _is_active_game(self, game: GameState) -> bool:
+        if game.mode is GameMode.MULTIPLAYER:
+            return False
+        if game.phase is Phase.RESULTS:
+            return False
+        if game.phase is Phase.AUTOPLAY and game.autoplay.status in {AutoplayStatus.READY, AutoplayStatus.FAILED}:
+            return False
+        return True
 
 
 service = GameService()

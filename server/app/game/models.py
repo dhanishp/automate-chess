@@ -172,6 +172,11 @@ class RoomStatus(str, Enum):
     COMPLETE = "complete"
 
 
+class RoomVisibility(str, Enum):
+    PRIVATE = "private"
+    PUBLIC = "public"
+
+
 class RoomPlayerState(BaseModel):
     side: Side
     player_token: str
@@ -182,6 +187,7 @@ class RoomState(BaseModel):
     room_code: str
     version: int = 0
     status: RoomStatus
+    visibility: RoomVisibility = RoomVisibility.PRIVATE
     game: GameState
     white_player: RoomPlayerState
     black_player: RoomPlayerState | None = None
@@ -196,6 +202,7 @@ class RoomSnapshot(BaseModel):
     room_code: str
     version: int = 0
     status: RoomStatus
+    visibility: RoomVisibility = RoomVisibility.PRIVATE
     game: GameState
     white_player: RoomPlayerSnapshot
     black_player: RoomPlayerSnapshot | None = None
@@ -204,6 +211,17 @@ class RoomSnapshot(BaseModel):
 class CreateRoomRequest(BaseModel):
     white_name: str = "White"
     black_name: str = "Black"
+    visibility: RoomVisibility = RoomVisibility.PRIVATE
+
+
+class OpenRoomSummary(BaseModel):
+    room_code: str
+    status: RoomStatus
+    phase: Phase
+    visibility: RoomVisibility
+    white_connected: bool
+    black_connected: bool
+    setup_turn: Side
 
 
 class JoinRoomRequest(BaseModel):

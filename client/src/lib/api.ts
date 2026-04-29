@@ -24,6 +24,7 @@ export type ActionType = 'place_piece' | 'finish_setup' | 'place_king'
 export type PieceType = 'P' | 'N' | 'B' | 'R' | 'Q' | 'K'
 export type AutoplayStatus = 'not_ready' | 'pending' | 'running' | 'ready' | 'failed'
 export type RoomStatus = 'waiting' | 'active' | 'complete'
+export type RoomVisibility = 'private' | 'public'
 
 export interface PlacedPiece {
   type: PieceType
@@ -96,6 +97,7 @@ export interface RoomState {
   room_code: string
   version: number
   status: RoomStatus
+  visibility: RoomVisibility
   game: GameState
   white_player: RoomPlayerState
   black_player: RoomPlayerState | null
@@ -118,8 +120,19 @@ export interface RoomEvent {
 
 export interface StatsResponse {
   active_games: number
+  active_players: number
   players_online: number
   occupied_players: number
+}
+
+export interface OpenRoomSummary {
+  room_code: string
+  status: RoomStatus
+  phase: Phase
+  visibility: RoomVisibility
+  white_connected: boolean
+  black_connected: boolean
+  setup_turn: Side
 }
 
 export interface CreateSoloGameRequest {
@@ -138,6 +151,7 @@ export interface CreateSampleGameRequest {
 export interface CreateRoomRequest {
   white_name?: string
   black_name?: string
+  visibility?: RoomVisibility
 }
 
 export interface JoinRoomRequest {
@@ -292,6 +306,10 @@ export function leaveRoom(roomCode: string, payload: LeaveRoomRequest): Promise<
 
 export function getStats(): Promise<StatsResponse> {
   return request<StatsResponse>('/stats')
+}
+
+export function getOpenRooms(): Promise<OpenRoomSummary[]> {
+  return request<OpenRoomSummary[]>('/rooms/open')
 }
 
 export function getApiBaseUrl(): string {

@@ -1634,6 +1634,13 @@ select {
   line-height: 1.6;
 }
 
+.launcher-support-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .launcher-controls {
   display: grid;
   gap: 1rem;
@@ -1660,6 +1667,75 @@ select {
 
 .multiplayer-room-row {
   align-items: center;
+}
+
+.open-games-panel {
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.open-games-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.open-games-heading > div {
+  display: grid;
+  gap: 6px;
+}
+
+.open-games-refresh {
+  flex: 0 0 auto;
+}
+
+.open-games-empty,
+.open-games-message {
+  margin: 0;
+}
+
+.open-games-empty {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.open-game-list {
+  display: grid;
+  gap: 10px;
+}
+
+.open-game-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+}
+
+.open-game-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.open-game-copy strong {
+  font-size: 1rem;
+}
+
+.open-game-copy span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.open-game-join {
+  min-width: 74px;
 }
 
 .choice-pill {
@@ -1727,6 +1803,11 @@ select {
   background: rgba(255, 255, 255, 0.78);
 }
 
+:root[data-theme='light'] .open-games-panel,
+:root[data-theme='light'] .open-game-card {
+  background: rgba(255, 255, 255, 0.64);
+}
+
 @media (max-width: 1100px) {
   .layout {
     grid-template-columns: 1fr;
@@ -1783,6 +1864,20 @@ select {
   .launcher-start-button {
     width: 100%;
     justify-self: stretch;
+  }
+
+  .open-games-heading,
+  .open-game-card {
+    grid-template-columns: 1fr;
+  }
+
+  .open-games-heading {
+    display: grid;
+  }
+
+  .open-games-refresh,
+  .open-game-join {
+    width: 100%;
   }
 
   .shop-points-strip {

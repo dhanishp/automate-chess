@@ -13,6 +13,7 @@ from app.game.models import (
     GameState,
     JoinRoomRequest,
     LeaveRoomRequest,
+    OpenRoomSummary,
     Phase,
     RoomActionRequest,
     RoomPlayerSnapshot,
@@ -21,6 +22,7 @@ from app.game.models import (
     RoomSnapshot,
     RoomState,
     RoomStatus,
+    RoomVisibility,
     Side,
 )
 from app.game.rules import AutomateRulesEngine
@@ -60,6 +62,7 @@ class RoomService:
         room = RoomState(
             room_code=room_code,
             status=RoomStatus.WAITING,
+            visibility=request.visibility,
             game=game,
             white_player=RoomPlayerState(side=Side.WHITE, player_token=player_token, connected=False),
             black_player=None,
@@ -105,6 +108,21 @@ class RoomService:
             "players_online": players_online,
             "occupied_players": occupied_players,
         }
+
+    def open_rooms(self) -> list[OpenRoomSummary]:
+        return [
+            OpenRoomSummary(
+                room_code=room.room_code,
+                status=room.status,
+                phase=room.game.phase,
+                visibility=room.visibility,
+                white_connected=room.white_player.connected,
+                black_connected=room.black_player.connected if room.black_player else False,
+                setup_turn=room.game.setup_turn,
+            )
+            for room in self._rooms.values()
+            if self._is_public_room_joinable(room)
+        ]
 
     def leave_room(self, room_code: str, request: LeaveRoomRequest) -> tuple[RoomState | None, Side]:
         normalized_room_code = self._normalize_room_code(room_code)
@@ -170,6 +188,7 @@ class RoomService:
             room_code=room.room_code,
             version=room.version,
             status=room.status,
+            visibility=room.visibility,
             game=room.game,
             white_player=RoomPlayerSnapshot(
                 side=room.white_player.side,
@@ -258,6 +277,14 @@ class RoomService:
 
     def _touch_room(self, room: RoomState) -> None:
         room.version += 1
+
+    def _is_public_room_joinable(self, room: RoomState) -> bool:
+        return (
+            room.visibility is RoomVisibility.PUBLIC
+            and room.status is RoomStatus.WAITING
+            and room.black_player is None
+            and room.game.phase is Phase.SETUP
+        )
 
     def _normalize_setup_turn(self, game: GameState) -> GameState:
         if game.phase is not Phase.SETUP:

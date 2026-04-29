@@ -15,6 +15,7 @@ from app.game.models import (
     Side,
 )
 from app.game.service import GameService
+from app.main import compose_stats
 
 
 def _build_ready_sequence() -> list[ActionRequest]:
@@ -97,6 +98,40 @@ def test_final_white_king_placement_persists_and_generates_autoplay_once() -> No
     assert updated.black.king_square == "g8"
     assert updated.phase == Phase.AUTOPLAY
     assert updated.autoplay.status == "ready"
+
+
+def test_stats_count_active_local_and_bot_games() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+
+    service.create_solo_game(CreateSoloGameRequest(mode=GameMode.LOCAL))
+    service.create_solo_game(CreateSoloGameRequest(mode=GameMode.BOT, human_side=HumanSideChoice.WHITE))
+
+    assert service.stats() == {"active_games": 2, "active_players": 2}
+
+
+def test_stats_exclude_finished_autoplay_games() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+    game = service.create_solo_game(CreateSoloGameRequest())
+
+    for action in _build_ready_sequence():
+        game = service.apply_action(game.game_id, action)
+
+    assert game.autoplay.status == "ready"
+    assert service.stats() == {"active_games": 0, "active_players": 0}
+
+
+def test_stats_endpoint_composition_includes_rooms_and_solo_games() -> None:
+    stats = compose_stats(
+        room_stats={"active_games": 2, "players_online": 3, "occupied_players": 4},
+        solo_stats={"active_games": 5, "active_players": 5},
+    )
+
+    assert stats == {
+        "active_games": 7,
+        "active_players": 8,
+        "players_online": 3,
+        "occupied_players": 9,
+    }
 
 
 def test_final_black_king_placement_persists_and_generates_autoplay_once() -> None:

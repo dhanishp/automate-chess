@@ -12,6 +12,7 @@ import {
   createSampleGame,
   createSoloGame,
   getGame,
+  getOpenRooms,
   getRoom,
   getStats,
   getWebSocketUrl,
@@ -20,10 +21,11 @@ import {
   type GameMode,
   type GameState,
   type HumanSideChoice,
+  type OpenRoomSummary,
   type PieceType,
   type RoomEvent,
   type RoomState,
-  type RoomStatus,
+  type RoomVisibility,
   type Side,
   type StatsResponse,
 } from '../lib/api'
@@ -261,11 +263,17 @@ function getLegalPlacementSquares(
 }
 
 function formatRoomClosedMessage(message: string | null | undefined): string {
+  const guidance = 'This room was closed. Return to the main menu to start again.'
   if (!message) {
-    return 'Room closed.'
+    return guidance
   }
 
-  return message.replace(' left. Room closed.', ' left the room. Room closed.')
+  const reason = message
+    .replace(' left. Room closed.', ' left the room.')
+    .replace(/room closed\.?/gi, '')
+    .trim()
+
+  return reason ? `${reason} ${guidance}` : guidance
 }
 
 function isClosedRoomMessage(message: string | null): boolean {
@@ -378,6 +386,7 @@ export function App() {
   const [gameSetupMode, setGameSetupMode] = useState<GameMode>('local')
   const [humanSideChoice, setHumanSideChoice] = useState<HumanSideChoice>('white')
   const [joinRoomCode, setJoinRoomCode] = useState('')
+  const [roomVisibility, setRoomVisibility] = useState<RoomVisibility>('private')
   const [roomState, setRoomState] = useState<RoomState | null>(null)
   const [roomSession, setRoomSession] = useState<RoomSession | null>(null)
   const [roomConnectionState, setRoomConnectionState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected')
@@ -396,6 +405,9 @@ export function App() {
   const [autoplayTransitionLatched, setAutoplayTransitionLatched] = useState(false)
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
   const [serverStats, setServerStats] = useState<StatsResponse | null>(null)
+  const [openRooms, setOpenRooms] = useState<OpenRoomSummary[]>([])
+  const [openRoomsLoading, setOpenRoomsLoading] = useState(false)
+  const [openRoomsError, setOpenRoomsError] = useState<string | null>(null)
   const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
   const [replayFinished, setReplayFinished] = useState(false)
   const actionInFlightRef = useRef(false)
@@ -512,6 +524,41 @@ export function App() {
   }, [game])
 
   useEffect(() => {
+    if (game) {
+      return
+    }
+
+    let cancelled = false
+    let intervalId: number | null = null
+
+    async function refreshOpenRooms() {
+      try {
+        const rooms = await getOpenRooms()
+        if (!cancelled) {
+          setOpenRooms(rooms)
+          setOpenRoomsError(null)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setOpenRoomsError(getErrorMessage(error))
+        }
+      }
+    }
+
+    void refreshOpenRooms()
+    intervalId = window.setInterval(() => {
+      void refreshOpenRooms()
+    }, 8000)
+
+    return () => {
+      cancelled = true
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+    }
+  }, [game])
+
+  useEffect(() => {
     if (!game) {
       return
     }
@@ -576,6 +623,7 @@ export function App() {
     setGameSetupMode('local')
     setHumanSideChoice('white')
     setJoinRoomCode('')
+    setRoomVisibility('private')
     setSelectedPiece('P')
     setSelectedPiecesBySide({
       white: 'P',
@@ -590,6 +638,8 @@ export function App() {
     setIsCalculatingAutoplay(false)
     setAutoplayTransitionLatched(false)
     setInviteLinkCopied(false)
+    setOpenRoomsLoading(false)
+    setOpenRoomsError(null)
     setReplayFinished(false)
   }
 
@@ -637,7 +687,7 @@ export function App() {
         if (socket) {
           socket.close()
         }
-        resetToLauncher(`${formatSideLabel(getOpponentSide(roomSession.playerSide))} left the room. Room closed.`)
+        resetToLauncher(formatRoomClosedMessage(`${formatSideLabel(getOpponentSide(roomSession.playerSide))} left. Room closed.`))
         return
       }
 
@@ -659,7 +709,7 @@ export function App() {
         return true
       } catch (error) {
         if (active) {
-          resetToLauncher(error instanceof ApiError && error.status === 404 ? 'Room closed. Start or join a new room.' : getErrorMessage(error))
+          resetToLauncher(error instanceof ApiError && error.status === 404 ? formatRoomClosedMessage(null) : getErrorMessage(error))
         }
         return false
       }
@@ -818,6 +868,24 @@ export function App() {
     }
   }
 
+  async function refreshOpenRooms() {
+    if (game) {
+      return
+    }
+
+    setOpenRoomsLoading(true)
+    setOpenRoomsError(null)
+
+    try {
+      const rooms = await getOpenRooms()
+      setOpenRooms(rooms)
+    } catch (error) {
+      setOpenRoomsError(getErrorMessage(error))
+    } finally {
+      setOpenRoomsLoading(false)
+    }
+  }
+
   async function backToMenu() {
     if (roomSession) {
       try {
@@ -903,7 +971,7 @@ export function App() {
     setReplayFinished(false)
 
     try {
-      const response = await createRoom()
+      const response = await createRoom({ visibility: roomVisibility })
       const session: RoomSession = {
         roomCode: response.room.room_code,
         playerToken: response.player_token,
@@ -927,6 +995,7 @@ export function App() {
       setErrorMessage('Enter a room code.')
       return
     }
+    setJoinRoomCode(normalizedRoomCode)
 
     actionInFlightRef.current = false
     window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
@@ -1248,8 +1317,13 @@ export function App() {
   if (!game) {
     const isBootstrapping = Boolean(loadingMessage)
     const launcherStatusPill = serverStats
-      ? `${serverStats.active_games} active game${serverStats.active_games === 1 ? '' : 's'} · ${serverStats.occupied_players} player${serverStats.occupied_players === 1 ? '' : 's'} in rooms`
+      ? `${serverStats.active_games} active game${serverStats.active_games === 1 ? '' : 's'} · ${serverStats.active_players} active player${serverStats.active_players === 1 ? '' : 's'}`
       : undefined
+    const roomVisibilityDescription =
+      roomVisibility === 'public'
+        ? 'Visible in Open Games until someone joins.'
+        : 'Join by code or invite link only.'
+    const showOpenGames = gameSetupMode === 'multiplayer' || openRooms.length > 0 || Boolean(openRoomsError)
 
     return (
       <div className="shell loading-shell">
@@ -1351,37 +1425,61 @@ export function App() {
                 ) : null}
 
                 {gameSetupMode === 'multiplayer' ? (
-                  <div className="launcher-group">
-                    <span className="launcher-label">Room Access</span>
-                    <div className="launcher-choice-row multiplayer-room-row">
-                      <button
-                        type="button"
-                        className="button primary compact-action"
-                        onClick={() => {
-                          void handleCreateRoom()
-                        }}
-                      >
-                        Create Room
-                      </button>
-                      <input
-                        type="text"
-                        className="room-code-input"
-                        value={joinRoomCode}
-                        onChange={(event) => setJoinRoomCode(event.target.value.toUpperCase())}
-                        placeholder="Enter code"
-                        maxLength={6}
-                      />
-                      <button
-                        type="button"
-                        className="button ghost compact-action"
-                        onClick={() => {
-                          void handleJoinRoom()
-                        }}
-                      >
-                        Join Room
-                      </button>
+                  <>
+                    <div className="launcher-group">
+                      <span className="launcher-label">Room Visibility</span>
+                      <div className="launcher-choice-row">
+                        <button
+                          type="button"
+                          className={`choice-pill ${roomVisibility === 'private' ? 'selected' : ''}`}
+                          onClick={() => setRoomVisibility('private')}
+                        >
+                          Private
+                        </button>
+                        <button
+                          type="button"
+                          className={`choice-pill ${roomVisibility === 'public' ? 'selected' : ''}`}
+                          onClick={() => setRoomVisibility('public')}
+                        >
+                          Public
+                        </button>
+                      </div>
+                      <p className="launcher-support-copy">{roomVisibilityDescription}</p>
                     </div>
-                  </div>
+
+                    <div className="launcher-group">
+                      <span className="launcher-label">Room Access</span>
+                      <div className="launcher-choice-row multiplayer-room-row">
+                        <button
+                          type="button"
+                          className="button primary compact-action"
+                          onClick={() => {
+                            void handleCreateRoom()
+                          }}
+                        >
+                          Create {roomVisibility === 'public' ? 'Public' : 'Private'} Room
+                        </button>
+                        <input
+                          type="text"
+                          className="room-code-input"
+                          value={joinRoomCode}
+                          onChange={(event) => setJoinRoomCode(event.target.value.toUpperCase())}
+                          placeholder="Enter code"
+                          maxLength={6}
+                        />
+                        <button
+                          type="button"
+                          className="button ghost compact-action"
+                          onClick={() => {
+                            void handleJoinRoom()
+                          }}
+                        >
+                          Join Room
+                        </button>
+                      </div>
+                    </div>
+
+                  </>
                 ) : null}
 
                 {gameSetupMode !== 'multiplayer' ? (
@@ -1395,6 +1493,57 @@ export function App() {
                     Start {formatModeLabel(gameSetupMode)}
                   </button>
                 ) : null}
+
+                {showOpenGames ? (
+                  <section className="launcher-group open-games-panel">
+                    <div className="open-games-heading">
+                      <div>
+                        <span className="launcher-label">Open Games</span>
+                        <p className="launcher-support-copy">Public rooms waiting for a second player.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="button ghost small open-games-refresh"
+                        onClick={() => {
+                          void refreshOpenRooms()
+                        }}
+                        disabled={openRoomsLoading}
+                      >
+                        {openRoomsLoading ? 'Refreshing...' : 'Refresh'}
+                      </button>
+                    </div>
+
+                    {openRoomsError ? <p className="error-message open-games-message">{openRoomsError}</p> : null}
+
+                    {openRooms.length === 0 && !openRoomsError ? (
+                      <p className="open-games-empty">No open games right now. Create one or invite a friend.</p>
+                    ) : null}
+
+                    {openRooms.length > 0 ? (
+                      <div className="open-game-list">
+                        {openRooms.map((openRoom) => (
+                          <article className="open-game-card" key={openRoom.room_code}>
+                            <div className="open-game-copy">
+                              <strong>Room {openRoom.room_code}</strong>
+                              <span>
+                                {openRoom.white_connected ? 'Host online' : 'Host waiting'} · {formatSideLabel(openRoom.setup_turn)} to place
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="button primary small open-game-join"
+                              onClick={() => {
+                                void handleJoinRoom(openRoom.room_code)
+                              }}
+                            >
+                              Join
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
               </div>
             )}
 
@@ -1406,13 +1555,13 @@ export function App() {
                   className="button ghost"
                   onClick={() => {
                     if (isClosedRoomMessage(errorMessage)) {
-                      setErrorMessage(null)
+                      resetToLauncher()
                       return
                     }
                     window.location.reload()
                   }}
                 >
-                  {isClosedRoomMessage(errorMessage) ? 'Start over' : 'Try reconnecting'}
+                  {isClosedRoomMessage(errorMessage) ? 'Back to menu' : 'Try reconnecting'}
                 </button>
               </>
             ) : null}

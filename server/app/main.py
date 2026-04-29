@@ -16,6 +16,7 @@ from app.game.models import (
     CreateSoloGameRequest,
     JoinRoomRequest,
     LeaveRoomRequest,
+    OpenRoomSummary,
     Phase,
     RoomActionRequest,
     RoomEvent,
@@ -81,9 +82,20 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def compose_stats(room_stats: dict[str, int], solo_stats: dict[str, int]) -> dict[str, int]:
+    active_players = room_stats["players_online"] + solo_stats["active_players"]
+    occupied_players = room_stats["occupied_players"] + solo_stats["active_players"]
+    return {
+        "active_games": room_stats["active_games"] + solo_stats["active_games"],
+        "active_players": active_players,
+        "players_online": room_stats["players_online"],
+        "occupied_players": occupied_players,
+    }
+
+
 @app.get("/stats")
 def stats() -> dict[str, int]:
-    return room_service.stats()
+    return compose_stats(room_service.stats(), service.stats())
 
 
 @app.post("/games/solo", response_model=ApiResponse)
@@ -143,6 +155,11 @@ async def join_room(request: JoinRoomRequest) -> RoomResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await room_hub.broadcast_snapshot(response.room)
     return response
+
+
+@app.get("/rooms/open", response_model=list[OpenRoomSummary])
+async def open_rooms() -> list[OpenRoomSummary]:
+    return room_service.open_rooms()
 
 
 @app.get("/rooms/{room_code}", response_model=RoomResponse)

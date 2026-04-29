@@ -9,6 +9,7 @@ from app.game.models import (
     RoomActionRequest,
     JoinRoomRequest,
     LeaveRoomRequest,
+    RoomVisibility,
 )
 from app.game.rooms import RoomAccessError, RoomJoinError, RoomNotFoundError, RoomNotReadyError, RoomService
 
@@ -65,10 +66,59 @@ def test_room_creation_assigns_white_and_waiting_status() -> None:
     assert response.room.room_code
     assert response.room.version == 1
     assert response.room.status == "waiting"
+    assert response.room.visibility == RoomVisibility.PRIVATE
     assert response.player_token
     assert response.room.white_player.side == "white"
     assert response.room.black_player is None
     _assert_room_snapshot_hides_player_tokens(response.room)
+
+
+def test_private_room_is_default_and_not_open_listed() -> None:
+    service = RoomService(engine_provider=FakeEngineProvider())
+
+    response = service.create_room(CreateRoomRequest())
+
+    assert response.room.visibility == "private"
+    assert service.open_rooms() == []
+
+
+def test_public_room_creation_is_open_listed_without_tokens() -> None:
+    service = RoomService(engine_provider=FakeEngineProvider())
+
+    created = service.create_room(CreateRoomRequest(visibility="public"))
+    open_rooms = service.open_rooms()
+
+    assert created.room.visibility == "public"
+    assert len(open_rooms) == 1
+    summary = open_rooms[0]
+    assert summary.room_code == created.room.room_code
+    assert summary.status == "waiting"
+    assert summary.phase == "setup"
+    assert summary.visibility == "public"
+    assert summary.white_connected is False
+    assert summary.black_connected is False
+    assert "player_token" not in summary.model_dump(mode="json")
+
+
+def test_open_rooms_filter_private_full_and_closed_rooms() -> None:
+    service = RoomService(engine_provider=FakeEngineProvider())
+    private_room = service.create_room(CreateRoomRequest())
+    full_public_room = service.create_room(CreateRoomRequest(visibility="public"))
+    closed_public_room = service.create_room(CreateRoomRequest(visibility="public"))
+    waiting_public_room = service.create_room(CreateRoomRequest(visibility="public"))
+
+    service.join_room(JoinRoomRequest(room_code=full_public_room.room.room_code))
+    service.leave_room(
+        closed_public_room.room.room_code,
+        LeaveRoomRequest(player_token=closed_public_room.player_token),
+    )
+
+    room_codes = {summary.room_code for summary in service.open_rooms()}
+
+    assert waiting_public_room.room.room_code in room_codes
+    assert private_room.room.room_code not in room_codes
+    assert full_public_room.room.room_code not in room_codes
+    assert closed_public_room.room.room_code not in room_codes
 
 
 def test_room_join_assigns_black_and_activates_room() -> None:
