@@ -4,6 +4,8 @@ export type AppTheme = 'dark' | 'light'
 interface AppHeaderProps {
   primaryPill?: string
   secondaryPill?: string
+  primaryPillClassName?: string
+  secondaryPillClassName?: string
   secondaryTone?: HeaderTone
   tone: HeaderTone
   theme: AppTheme
@@ -42,6 +44,8 @@ function ExitIcon() {
 export function AppHeader({
   primaryPill,
   secondaryPill,
+  primaryPillClassName,
+  secondaryPillClassName,
   secondaryTone,
   tone,
   theme,
@@ -71,13 +75,13 @@ export function AppHeader({
           <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
         </button>
         {primaryPill ? (
-          <div className={`pill tone-${tone}`}>
+          <div className={`pill tone-${tone}${primaryPillClassName ? ` ${primaryPillClassName}` : ''}`}>
             <span className={`pill-dot tone-${tone}`} aria-hidden="true" />
             <span>{primaryPill}</span>
           </div>
         ) : null}
         {secondaryPill ? (
-          <div className={`pill tone-${secondaryTone ?? tone}`}>
+          <div className={`pill tone-${secondaryTone ?? tone}${secondaryPillClassName ? ` ${secondaryPillClassName}` : ''}`}>
             <span className={`pill-dot tone-${secondaryTone ?? tone}`} aria-hidden="true" />
             <span>{secondaryPill}</span>
           </div>

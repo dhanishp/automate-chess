@@ -93,8 +93,13 @@ class RoomService:
     def stats(self) -> dict[str, int]:
         players_online = 0
         occupied_players = 0
+        active_games = 0
 
         for room in self._rooms.values():
+            if not self._is_active_room(room):
+                continue
+
+            active_games += 1
             occupied_players += 1
             if room.white_player.connected:
                 players_online += 1
@@ -104,7 +109,7 @@ class RoomService:
                     players_online += 1
 
         return {
-            "active_games": len(self._rooms),
+            "active_games": active_games,
             "players_online": players_online,
             "occupied_players": occupied_players,
         }
@@ -285,6 +290,16 @@ class RoomService:
             and room.black_player is None
             and room.game.phase is Phase.SETUP
         )
+
+    def _is_active_room(self, room: RoomState) -> bool:
+        if room.game.phase is Phase.RESULTS:
+            return False
+        if room.game.phase is Phase.AUTOPLAY and room.game.autoplay.status in {
+            AutoplayStatus.READY,
+            AutoplayStatus.FAILED,
+        }:
+            return False
+        return True
 
     def _normalize_setup_turn(self, game: GameState) -> GameState:
         if game.phase is not Phase.SETUP:

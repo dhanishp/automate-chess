@@ -88,6 +88,13 @@ STOCKFISH_PATH=/usr/games/stockfish
 
 If Stockfish is missing or fails, solo mode returns a backend error without storing a half-complete replay. Multiplayer stores and broadcasts a shared `failed` autoplay state so both clients can return to menu.
 
+The backend exposes two deployment checks:
+
+- `/health`: lightweight process health for Render.
+- `/ready`: app readiness plus a lightweight Stockfish launch/ping check. It returns `ready` when Stockfish is available and `degraded` when the app is up but the engine is unavailable.
+
+The backend also performs the same lightweight Stockfish check on startup. On free Render instances, wake the app and check `/ready` before a demo so the first real autoplay is not the first time the engine is touched.
+
 ## Render Deployment
 
 This repo supports a single-instance Render Web Service using Docker.
@@ -110,7 +117,7 @@ Quick path:
 3. Use Docker runtime.
 4. Use the root `Dockerfile`.
 5. Health check path: `/health`.
-6. Deploy.
+6. Deploy, then open `/ready` once before demos to confirm Stockfish readiness.
 
 Manual Render settings:
 
@@ -133,6 +140,8 @@ STOCKFISH_MAX_PLIES=400
 ```
 
 Render provides `PORT`; the Docker command binds Uvicorn to `0.0.0.0:${PORT:-10000}`.
+
+Render free services can sleep after idle time and cold start on the next visit. The launcher shows a small engine readiness indicator; a paid always-on instance avoids free-tier sleep/cold starts.
 
 More detailed steps are in [DEPLOYMENT.md](DEPLOYMENT.md).
 

@@ -1,13 +1,16 @@
 from collections import defaultdict
+from contextlib import asynccontextmanager
+import logging
 import os
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.game.bot import BotMoveError
-from app.game.engine import EngineError, EngineUnavailableError
+from app.game.engine import EngineError, EngineUnavailableError, LocalStockfishProvider, StockfishReadiness
 from app.game.models import (
     ActionRequest,
     ApiResponse,
@@ -29,9 +32,46 @@ from app.game.rooms import RoomAccessError, RoomJoinError, RoomNotFoundError, Ro
 from app.game.rules import RuleViolation
 from app.game.service import service
 
-app = FastAPI(title="Automate Chess API", version="0.1.0")
 room_service = RoomService()
+stockfish_provider = LocalStockfishProvider()
+last_stockfish_readiness: StockfishReadiness | None = None
 CLIENT_DIST_DIR = Path(__file__).resolve().parents[2] / "client" / "dist"
+logger = logging.getLogger(__name__)
+
+
+def compose_ready_response(stockfish: StockfishReadiness) -> dict[str, object]:
+    return {
+        "status": "ready" if stockfish.available else "degraded",
+        "app": "ok",
+        "stockfish": {
+            "available": stockfish.available,
+            "path": stockfish.path,
+            "message": stockfish.message,
+        },
+    }
+
+
+def check_stockfish_readiness() -> StockfishReadiness:
+    global last_stockfish_readiness
+    last_stockfish_readiness = stockfish_provider.check_readiness()
+    return last_stockfish_readiness
+
+
+def warm_stockfish_on_startup() -> None:
+    readiness = check_stockfish_readiness()
+    if readiness.available:
+        logger.info("Stockfish readiness check passed at %s", readiness.path)
+        return
+    logger.warning("Stockfish readiness check degraded: %s", readiness.message)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    warm_stockfish_on_startup()
+    yield
+
+
+app = FastAPI(title="Automate Chess API", version="0.1.0", lifespan=lifespan)
 
 
 class RoomHub:
@@ -82,6 +122,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/ready")
+def ready() -> dict[str, object]:
+    return compose_ready_response(check_stockfish_readiness())
+
+
 def compose_stats(room_stats: dict[str, int], solo_stats: dict[str, int]) -> dict[str, int]:
     active_players = room_stats["players_online"] + solo_stats["active_players"]
     occupied_players = room_stats["occupied_players"] + solo_stats["active_players"]
@@ -120,6 +165,15 @@ async def get_game(game_id: str) -> ApiResponse:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ApiResponse(game=game)
+
+
+@app.delete("/games/{game_id}")
+def abandon_game(game_id: str) -> dict[str, str]:
+    try:
+        service.abandon_game(game_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "abandoned"}
 
 
 @app.post("/games/{game_id}/actions", response_model=ApiResponse)

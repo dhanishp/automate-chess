@@ -125,6 +125,16 @@ export interface StatsResponse {
   occupied_players: number
 }
 
+export interface ReadyResponse {
+  status: 'ready' | 'degraded'
+  app: 'ok'
+  stockfish: {
+    available: boolean
+    path: string | null
+    message: string
+  }
+}
+
 export interface OpenRoomSummary {
   room_code: string
   status: RoomStatus
@@ -264,6 +274,12 @@ export function getGame(gameId: string): Promise<ApiResponse> {
   return request<ApiResponse>(`/games/${gameId}`)
 }
 
+export function abandonGame(gameId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/games/${gameId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function applyAction(gameId: string, payload: ActionRequest): Promise<ApiResponse> {
   return request<ApiResponse>(`/games/${gameId}/actions`, {
     method: 'POST',
@@ -306,6 +322,10 @@ export function leaveRoom(roomCode: string, payload: LeaveRoomRequest): Promise<
 
 export function getStats(): Promise<StatsResponse> {
   return request<StatsResponse>('/stats')
+}
+
+export function getReadiness(): Promise<ReadyResponse> {
+  return request<ReadyResponse>('/ready')
 }
 
 export function getOpenRooms(): Promise<OpenRoomSummary[]> {

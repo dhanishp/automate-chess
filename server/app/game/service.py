@@ -88,6 +88,12 @@ class GameService:
         except KeyError as exc:
             raise KeyError(f"Game {game_id} does not exist.") from exc
 
+    def abandon_game(self, game_id: str) -> None:
+        try:
+            del self._games[game_id]
+        except KeyError as exc:
+            raise KeyError(f"Game {game_id} does not exist.") from exc
+
     def apply_action(self, game_id: str, action: ActionRequest) -> GameState:
         game = self.get_game(game_id)
         working_copy = game.model_copy(deep=True)

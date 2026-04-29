@@ -150,6 +150,44 @@ def test_room_stats_count_active_games_and_players() -> None:
     assert stats == {"active_games": 1, "players_online": 2, "occupied_players": 2}
 
 
+def test_room_stats_ignore_completed_and_closed_rooms() -> None:
+    service = RoomService(engine_provider=FakeEngineProvider())
+    completed = service.create_room(CreateRoomRequest())
+    joined = service.join_room(JoinRoomRequest(room_code=completed.room.room_code))
+    service.mark_connected(completed.room.room_code, completed.player_token, True)
+    service.mark_connected(completed.room.room_code, joined.player_token, True)
+
+    for action in _build_ready_sequence():
+        token = completed.player_token if action.side == "white" else joined.player_token
+        service.apply_action(
+            completed.room.room_code,
+            RoomActionRequest(player_token=token, action=action),
+        )
+
+    closed = service.create_room(CreateRoomRequest())
+    service.mark_connected(closed.room.room_code, closed.player_token, True)
+    service.leave_room(closed.room.room_code, LeaveRoomRequest(player_token=closed.player_token))
+
+    assert service.stats() == {"active_games": 0, "players_online": 0, "occupied_players": 0}
+
+
+def test_room_stats_ignore_failed_autoplay_rooms() -> None:
+    service = RoomService(engine_provider=UnavailableEngineProvider())
+    created = service.create_room(CreateRoomRequest())
+    joined = service.join_room(JoinRoomRequest(room_code=created.room.room_code))
+    service.mark_connected(created.room.room_code, created.player_token, True)
+    service.mark_connected(created.room.room_code, joined.player_token, True)
+
+    for action in _build_ready_sequence():
+        token = created.player_token if action.side == "white" else joined.player_token
+        service.apply_action(
+            created.room.room_code,
+            RoomActionRequest(player_token=token, action=action),
+        )
+
+    assert service.stats() == {"active_games": 0, "players_online": 0, "occupied_players": 0}
+
+
 def test_room_snapshots_only_include_current_player_token_at_top_level() -> None:
     service = RoomService(engine_provider=FakeEngineProvider())
     created = service.create_room(CreateRoomRequest())

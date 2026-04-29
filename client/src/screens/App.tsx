@@ -6,6 +6,7 @@ import { ConfirmationModal } from '../components/ConfirmationModal'
 import { Sidebar } from '../components/Sidebar'
 import {
   ApiError,
+  abandonGame,
   applyAction,
   applyRoomAction,
   createRoom,
@@ -13,6 +14,7 @@ import {
   createSoloGame,
   getGame,
   getOpenRooms,
+  getReadiness,
   getRoom,
   getStats,
   getWebSocketUrl,
@@ -23,6 +25,7 @@ import {
   type HumanSideChoice,
   type OpenRoomSummary,
   type PieceType,
+  type ReadyResponse,
   type RoomEvent,
   type RoomState,
   type RoomVisibility,
@@ -405,6 +408,7 @@ export function App() {
   const [autoplayTransitionLatched, setAutoplayTransitionLatched] = useState(false)
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
   const [serverStats, setServerStats] = useState<StatsResponse | null>(null)
+  const [readiness, setReadiness] = useState<ReadyResponse | null>(null)
   const [openRooms, setOpenRooms] = useState<OpenRoomSummary[]>([])
   const [openRoomsLoading, setOpenRoomsLoading] = useState(false)
   const [openRoomsError, setOpenRoomsError] = useState<string | null>(null)
@@ -522,6 +526,40 @@ export function App() {
       }
     }
   }, [game])
+
+  useEffect(() => {
+    if (game || readiness?.status === 'ready') {
+      return
+    }
+
+    let cancelled = false
+    let intervalId: number | null = null
+
+    async function refreshReadiness() {
+      try {
+        const response = await getReadiness()
+        if (!cancelled) {
+          setReadiness(response)
+        }
+      } catch {
+        if (!cancelled) {
+          setReadiness(null)
+        }
+      }
+    }
+
+    void refreshReadiness()
+    intervalId = window.setInterval(() => {
+      void refreshReadiness()
+    }, 12000)
+
+    return () => {
+      cancelled = true
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+    }
+  }, [game, readiness?.status])
 
   useEffect(() => {
     if (game) {
@@ -893,6 +931,12 @@ export function App() {
       } catch {
         // Best-effort cleanup for v1.
       }
+    } else if (game) {
+      try {
+        await abandonGame(game.game_id)
+      } catch {
+        // Best-effort cleanup for local/solo games.
+      }
     }
 
     resetToLauncher()
@@ -912,6 +956,8 @@ export function App() {
   }
 
   async function startNewGame(mode: GameMode = 'local', sideChoice: HumanSideChoice = 'white') {
+    const previousGameId = !roomSession ? game?.game_id : null
+
     actionInFlightRef.current = false
     setStoredRoomSession(null)
     setRoomState(null)
@@ -935,6 +981,14 @@ export function App() {
     setReplayFinished(false)
 
     try {
+      if (previousGameId) {
+        try {
+          await abandonGame(previousGameId)
+        } catch {
+          // Best-effort cleanup; a missing old game should not block the new one.
+        }
+      }
+
       const response = await (
         mode === 'bot'
           ? Promise.all([createSoloGame({ mode, human_side: sideChoice }), delay(BOT_THINK_DELAY_MS)]).then(
@@ -1317,8 +1371,21 @@ export function App() {
   if (!game) {
     const isBootstrapping = Boolean(loadingMessage)
     const launcherStatusPill = serverStats
-      ? `${serverStats.active_games} active game${serverStats.active_games === 1 ? '' : 's'} · ${serverStats.active_players} active player${serverStats.active_players === 1 ? '' : 's'}`
+      ? `Live now: ${serverStats.active_games} game${serverStats.active_games === 1 ? '' : 's'} · ${serverStats.active_players} player${serverStats.active_players === 1 ? '' : 's'}`
       : undefined
+    const hasLiveActivity = Boolean(serverStats && (serverStats.active_games > 0 || serverStats.active_players > 0))
+    const engineStatusPill =
+      readiness?.status === 'ready'
+        ? 'Engine ready'
+        : readiness?.status === 'degraded'
+          ? 'Engine unavailable'
+          : 'Engine waking up...'
+    const engineStatusTone: HeaderTone =
+      readiness?.status === 'ready'
+        ? 'connected'
+        : readiness?.status === 'degraded'
+          ? 'disconnected'
+          : 'connecting'
     const roomVisibilityDescription =
       roomVisibility === 'public'
         ? 'Visible in Open Games until someone joins.'
@@ -1329,7 +1396,11 @@ export function App() {
       <div className="shell loading-shell">
         <AppHeader
           primaryPill={launcherStatusPill}
-          tone={launcherStatusPill ? 'connected' : 'setup'}
+          primaryPillClassName={`activity-pill ${hasLiveActivity ? 'activity-pill-live' : ''}`}
+          secondaryPill={engineStatusPill}
+          secondaryPillClassName="system-pill"
+          secondaryTone={engineStatusTone}
+          tone="setup"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
         />
@@ -1346,9 +1417,6 @@ export function App() {
             <div className="launcher-hero-copy">
               <p className="eyebrow">New Challenge</p>
               <h1>Automate Chess</h1>
-              <p className="launcher-copy">
-                Build your formation, place the kings last, then watch the finished position resolve through full autoplay.
-              </p>
             </div>
 
             <section className="launcher-tutorial">

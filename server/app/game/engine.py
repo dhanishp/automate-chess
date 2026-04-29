@@ -46,9 +46,59 @@ class EngineConfig:
         )
 
 
+@dataclass(frozen=True)
+class StockfishReadiness:
+    available: bool
+    path: str | None
+    message: str
+
+
 class LocalStockfishProvider:
     def __init__(self, config: EngineConfig | None = None) -> None:
         self._config = config or EngineConfig.from_env()
+
+    def check_readiness(self, timeout_s: float = 2.0) -> StockfishReadiness:
+        try:
+            stockfish_path = self._resolve_stockfish_path()
+        except EngineUnavailableError as exc:
+            return StockfishReadiness(available=False, path=None, message=str(exc))
+
+        try:
+            engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, timeout=timeout_s)
+        except FileNotFoundError:
+            return StockfishReadiness(available=False, path=stockfish_path, message=self._missing_engine_message())
+        except OSError as exc:
+            return StockfishReadiness(
+                available=False,
+                path=stockfish_path,
+                message=f"Unable to launch Stockfish at {stockfish_path}: {exc}",
+            )
+        except Exception as exc:
+            return StockfishReadiness(
+                available=False,
+                path=stockfish_path,
+                message=f"Stockfish was found at {stockfish_path}, but readiness check failed: {exc}",
+            )
+
+        try:
+            engine.ping()
+        except Exception as exc:
+            return StockfishReadiness(
+                available=False,
+                path=stockfish_path,
+                message=f"Stockfish was found at {stockfish_path}, but did not respond cleanly: {exc}",
+            )
+        finally:
+            try:
+                engine.quit()
+            except Exception:
+                pass
+
+        return StockfishReadiness(
+            available=True,
+            path=stockfish_path,
+            message="Stockfish is ready.",
+        )
 
     def generate_autoplay(self, game: GameState) -> AutoplayState:
         stockfish_path = self._resolve_stockfish_path()

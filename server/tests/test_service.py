@@ -109,6 +109,24 @@ def test_stats_count_active_local_and_bot_games() -> None:
     assert service.stats() == {"active_games": 2, "active_players": 2}
 
 
+def test_abandon_game_removes_solo_game_from_stats() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+    game = service.create_solo_game(CreateSoloGameRequest(mode=GameMode.BOT, human_side=HumanSideChoice.WHITE))
+
+    assert service.stats() == {"active_games": 1, "active_players": 1}
+
+    service.abandon_game(game.game_id)
+
+    assert service.stats() == {"active_games": 0, "active_players": 0}
+
+    try:
+        service.get_game(game.game_id)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("Expected abandoned game to be removed.")
+
+
 def test_stats_exclude_finished_autoplay_games() -> None:
     service = GameService(engine_provider=FakeEngineProvider())
     game = service.create_solo_game(CreateSoloGameRequest())
@@ -117,6 +135,17 @@ def test_stats_exclude_finished_autoplay_games() -> None:
         game = service.apply_action(game.game_id, action)
 
     assert game.autoplay.status == "ready"
+    assert service.stats() == {"active_games": 0, "active_players": 0}
+
+
+def test_stats_exclude_failed_autoplay_games() -> None:
+    service = GameService(engine_provider=UnavailableEngineProvider())
+    game = service.create_solo_game(CreateSoloGameRequest())
+
+    for action in _build_ready_sequence():
+        game = service.apply_action(game.game_id, action)
+
+    assert game.autoplay.status == "failed"
     assert service.stats() == {"active_games": 0, "active_players": 0}
 
 

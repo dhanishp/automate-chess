@@ -32,6 +32,8 @@ dockerContext: .
 healthCheckPath: /health
 ```
 
+Keep Render's health check on `/health`. Use `/ready` for manual app and Stockfish readiness checks.
+
 ## Manual Render Setup
 
 If you do not use the blueprint:
@@ -72,6 +74,15 @@ STOCKFISH_SKILL_LEVEL=
 ```
 
 Do not set `VITE_API_BASE_URL` for the Render single-service deployment. The client should use same-origin REST and WebSocket URLs in production.
+
+## Health And Readiness
+
+- `/health` is intentionally tiny and returns `{"status":"ok"}` when the FastAPI process is alive.
+- `/ready` verifies app readiness and performs a lightweight Stockfish binary launch/ping. It does not run a full engine game.
+- If Stockfish is unavailable, `/ready` returns `status: "degraded"` with a clear Stockfish message while keeping the app online.
+- The backend runs the same lightweight Stockfish check on startup and logs whether the engine was found/warmed.
+
+Before demos or judge sessions on Render free hosting, open the root URL or `/ready` once and wait for the launcher to show `Engine ready`. A paid always-on Render instance avoids free-tier sleep and most cold-start delays.
 
 ## Docker Image
 
@@ -139,22 +150,25 @@ http://127.0.0.1:10000
 Smoke test:
 
 1. Open `/health`; it should return `{"status":"ok"}`.
-2. Start a solo sandbox.
-3. Create a multiplayer room in one browser.
-4. Join it from another browser.
-5. Finish setup into autoplay.
-6. Confirm replay generation succeeds.
+2. Open `/ready`; it should report `status: "ready"` and `stockfish.available: true`.
+3. Start a solo sandbox.
+4. Create a multiplayer room in one browser.
+5. Join it from another browser.
+6. Finish setup into autoplay.
+7. Confirm replay generation succeeds.
 
 ## Manual QA After Render Deploy
 
 - Visit `/health`.
+- Visit `/ready` and confirm Stockfish is ready before demos.
 - Load the root URL and confirm the React app loads.
+- Confirm the launcher shows `Engine ready`.
 - Create and join a room across two browser windows.
 - Confirm WebSocket updates move setup turns live.
 - Finish setup and confirm Stockfish autoplay reaches replay.
 - Leave room from each side and confirm the other client returns to menu.
 - Refresh during setup and confirm session restore works.
-- Test after service idle/cold start if using a free plan.
+- Test after service idle/cold start if using a free plan; wake the app with `/ready` first for demos.
 
 ## Known Deployment Limits
 
@@ -164,4 +178,4 @@ Smoke test:
 - No accounts/auth.
 - No public matchmaking.
 - Multiplayer replay controls are local per client.
-- Free hosting may sleep and cold start.
+- Free hosting may sleep and cold start; warm `/ready` before friend/judge tests, or use a paid always-on instance.
