@@ -1,6 +1,6 @@
 # Automate Chess
 
-# Tr it our live: https://automate-chess.onrender.com
+# Try it out live: https://automate-chess.onrender.com
 
 Browser-based Automate-style chess for the Handshake Codex Challenge.
 
