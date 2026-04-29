@@ -13,6 +13,7 @@ import {
   createSoloGame,
   getGame,
   getRoom,
+  getStats,
   getWebSocketUrl,
   joinRoom,
   leaveRoom,
@@ -24,6 +25,7 @@ import {
   type RoomState,
   type RoomStatus,
   type Side,
+  type StatsResponse,
 } from '../lib/api'
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const
@@ -393,6 +395,7 @@ export function App() {
   const [isCalculatingAutoplay, setIsCalculatingAutoplay] = useState(false)
   const [autoplayTransitionLatched, setAutoplayTransitionLatched] = useState(false)
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
+  const [serverStats, setServerStats] = useState<StatsResponse | null>(null)
   const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
   const [replayFinished, setReplayFinished] = useState(false)
   const actionInFlightRef = useRef(false)
@@ -473,6 +476,40 @@ export function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (game) {
+      return
+    }
+
+    let cancelled = false
+    let intervalId: number | null = null
+
+    async function refreshStats() {
+      try {
+        const stats = await getStats()
+        if (!cancelled) {
+          setServerStats(stats)
+        }
+      } catch {
+        if (!cancelled) {
+          setServerStats(null)
+        }
+      }
+    }
+
+    void refreshStats()
+    intervalId = window.setInterval(() => {
+      void refreshStats()
+    }, 8000)
+
+    return () => {
+      cancelled = true
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+    }
+  }, [game])
 
   useEffect(() => {
     if (!game) {
@@ -1210,11 +1247,15 @@ export function App() {
 
   if (!game) {
     const isBootstrapping = Boolean(loadingMessage)
+    const launcherStatusPill = serverStats
+      ? `${serverStats.active_games} active game${serverStats.active_games === 1 ? '' : 's'} · ${serverStats.occupied_players} player${serverStats.occupied_players === 1 ? '' : 's'} in rooms`
+      : undefined
 
     return (
       <div className="shell loading-shell">
         <AppHeader
-          tone="setup"
+          primaryPill={launcherStatusPill}
+          tone={launcherStatusPill ? 'connected' : 'setup'}
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
         />

@@ -81,6 +81,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/stats")
+def stats() -> dict[str, int]:
+    return room_service.stats()
+
+
 @app.post("/games/solo", response_model=ApiResponse)
 async def create_solo_game(request: CreateSoloGameRequest) -> ApiResponse:
     game = service.create_solo_game(request)

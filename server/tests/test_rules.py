@@ -1,4 +1,4 @@
-from app.game.models import ActionRequest, ActionType, GameState, PieceType, Side
+from app.game.models import ActionRequest, ActionType, GameState, PieceType, PlacedPiece, Side
 from app.game.rules import AutomateRulesEngine, RuleViolation
 
 
@@ -144,6 +144,51 @@ def test_finish_setup_rejects_early_when_mandatory_pawns_are_missing() -> None:
         assert "at least 6 pawns" in str(exc)
     else:
         raise AssertionError("Expected early finish to fail.")
+
+
+def test_finish_setup_allowed_when_no_legal_affordable_placements_remain() -> None:
+    game = build_game()
+    occupied_white_setup_squares = [
+        "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1",
+        "a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2",
+        "a3", "b3", "c3", "d3", "e3", "f3", "g3", "h3",
+    ]
+    game.white.pieces = [
+        PlacedPiece(type=PieceType.PAWN if square[1] == "2" else PieceType.KNIGHT, square=square)
+        for square in occupied_white_setup_squares
+    ]
+    game.white.points_remaining = 1
+
+    assert game.white.mandatory_pawn_count >= game.rules.mandatory_pawns
+    assert engine.has_legal_affordable_non_king_placement(game, Side.WHITE) is False
+
+    engine.apply_action(game, ActionRequest(action_type=ActionType.FINISH_SETUP, side=Side.WHITE))
+
+    assert game.white.finished_spending is True
+
+
+def test_finish_setup_still_rejects_missing_pawns_when_no_legal_placements_remain() -> None:
+    game = build_game()
+    occupied_white_setup_squares = [
+        "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1",
+        "a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2",
+        "a3", "b3", "c3", "d3", "e3", "f3", "g3", "h3",
+    ]
+    game.white.pieces = [
+        PlacedPiece(type=PieceType.PAWN if square in {"a2", "b2", "c2", "d2", "e2"} else PieceType.KNIGHT, square=square)
+        for square in occupied_white_setup_squares
+    ]
+    game.white.points_remaining = 1
+
+    assert game.white.mandatory_pawn_count == game.rules.mandatory_pawns - 1
+    assert engine.has_legal_affordable_non_king_placement(game, Side.WHITE) is False
+
+    try:
+        engine.apply_action(game, ActionRequest(action_type=ActionType.FINISH_SETUP, side=Side.WHITE))
+    except RuleViolation as exc:
+        assert "at least 6 pawns" in str(exc)
+    else:
+        raise AssertionError("Expected mandatory-pawn finish rejection.")
 
 
 def test_non_pawn_move_is_rejected_if_it_leaves_too_few_points_for_required_pawns() -> None:

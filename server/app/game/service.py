@@ -4,9 +4,11 @@ import random
 from typing import Dict
 
 from app.game.bot import BotMoveError, EasySetupBot
-from app.game.engine import EngineProvider, LocalStockfishProvider
+from app.game.engine import EngineError, EngineProvider, LocalStockfishProvider
 from app.game.models import (
     ActionRequest,
+    AutoplayState,
+    AutoplayStatus,
     CreateSampleGameRequest,
     CreateSoloGameRequest,
     GameMode,
@@ -92,7 +94,7 @@ class GameService:
         updated = self._rules_engine.apply_action(working_copy, action)
         updated = self._normalize_setup_turn(updated)
         updated = self._advance_bot_turns(updated)
-        updated = self._finalize_post_setup(updated)
+        updated = self._finalize_post_setup_or_failure(updated)
 
         self._games[game_id] = updated
         return updated
@@ -104,7 +106,7 @@ class GameService:
             game.event_log.append(f"{game.bot_side.value} bot selected {action.action_type.value}")
             game = self._rules_engine.apply_action(game, action)
             game = self._normalize_setup_turn(game)
-        return self._finalize_post_setup(game)
+        return self._finalize_post_setup_or_failure(game)
 
     def _finalize_post_setup(self, game: GameState) -> GameState:
         if game.phase == Phase.READY_FOR_AUTOPLAY:
@@ -113,6 +115,16 @@ class GameService:
             game.result = game.autoplay.result
             game.event_log.append("Autoplay replay generated from the finished setup.")
         return game
+
+    def _finalize_post_setup_or_failure(self, game: GameState) -> GameState:
+        try:
+            return self._finalize_post_setup(game)
+        except EngineError as exc:
+            game.phase = Phase.AUTOPLAY
+            game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=str(exc))
+            game.result = None
+            game.event_log.append(f"Autoplay replay generation failed: {exc}")
+            return game
 
     def _resolve_human_side(self, choice: HumanSideChoice) -> Side:
         if choice is HumanSideChoice.WHITE:

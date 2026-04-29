@@ -198,6 +198,11 @@ export function Sidebar({
     cost: game.rules.costs[piece],
     enabled: canInteract && canPlacePieceTypeNow(game, piece),
   }))
+  const noLegalBuysRemain =
+    canFinishSetup &&
+    pieceOptions
+      .filter((option) => option.piece !== 'K')
+      .every((option) => !option.enabled)
   const finishSetupLabel =
     isMultiplayer && roomStatus === 'waiting'
       ? 'Waiting for opponent'
@@ -347,7 +352,9 @@ export function Sidebar({
               {finishSetupLabel}
             </button>
             {canFinishSetup ? (
-              <p className="hint-message compact-hint">Lock this side's budget. King placement comes next.</p>
+              <p className="hint-message compact-hint">
+                {noLegalBuysRemain ? 'No legal buys remain. Lock the budget to place the king.' : 'Lock this side\'s budget. King placement comes next.'}
+              </p>
             ) : null}
             <button
               type="button"

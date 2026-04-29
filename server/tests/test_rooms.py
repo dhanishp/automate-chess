@@ -85,6 +85,21 @@ def test_room_join_assigns_black_and_activates_room() -> None:
     _assert_room_snapshot_hides_player_tokens(joined.room)
 
 
+def test_room_stats_count_active_games_and_players() -> None:
+    service = RoomService(engine_provider=FakeEngineProvider())
+    created = service.create_room(CreateRoomRequest())
+
+    stats = service.stats()
+    assert stats == {"active_games": 1, "players_online": 0, "occupied_players": 1}
+
+    joined = service.join_room(JoinRoomRequest(room_code=created.room.room_code))
+    service.mark_connected(created.room.room_code, created.player_token, True)
+    service.mark_connected(created.room.room_code, joined.player_token, True)
+
+    stats = service.stats()
+    assert stats == {"active_games": 1, "players_online": 2, "occupied_players": 2}
+
+
 def test_room_snapshots_only_include_current_player_token_at_top_level() -> None:
     service = RoomService(engine_provider=FakeEngineProvider())
     created = service.create_room(CreateRoomRequest())

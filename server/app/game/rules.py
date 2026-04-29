@@ -20,6 +20,13 @@ class RuleViolation(ValueError):
 
 FILE_CHARS = "abcdefgh"
 FILES = set(FILE_CHARS)
+NON_KING_PIECES: tuple[PieceType, ...] = (
+    PieceType.PAWN,
+    PieceType.KNIGHT,
+    PieceType.BISHOP,
+    PieceType.ROOK,
+    PieceType.QUEEN,
+)
 
 
 class AutomateRulesEngine:
@@ -134,6 +141,39 @@ class AutomateRulesEngine:
         spending_complete = player.finished_spending or player.points_remaining == 0
         return has_minimum_pawns and spending_complete
 
+    def has_legal_affordable_non_king_placement(self, game: GameState, side: Side) -> bool:
+        if game.phase is not Phase.SETUP:
+            return False
+
+        player = game.player(side)
+        if player.finished_spending:
+            return False
+
+        occupied = self._occupied_squares(game)
+        for piece_type in NON_KING_PIECES:
+            cost = game.rules.costs[piece_type]
+            if cost > player.points_remaining:
+                continue
+
+            ranks = game.rules.pawn_ranks[side] if piece_type is PieceType.PAWN else game.rules.non_king_ranks[side]
+            for square in self._squares_for_ranks(ranks):
+                if square in occupied:
+                    continue
+
+                try:
+                    self._ensure_mandatory_pawn_path_remains_viable(
+                        game=game,
+                        side=side,
+                        piece_type=piece_type,
+                        placed_square=square,
+                        cost=cost,
+                    )
+                except RuleViolation:
+                    continue
+                return True
+
+        return False
+
     def _side_setup_complete(self, game: GameState, side: Side) -> bool:
         player = game.player(side)
         spending_complete = player.finished_spending or player.points_remaining == 0
@@ -205,6 +245,9 @@ class AutomateRulesEngine:
             for file_char in FILE_CHARS
             for rank in game.rules.pawn_ranks[side]
         }
+
+    def _squares_for_ranks(self, ranks: set[int]) -> list[str]:
+        return [f"{file_char}{rank}" for rank in sorted(ranks) for file_char in FILE_CHARS]
 
     def _normalize_square(self, square: str) -> str:
         normalized = square.strip().lower()

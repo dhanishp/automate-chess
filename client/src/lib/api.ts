@@ -116,6 +116,12 @@ export interface RoomEvent {
   message?: string | null
 }
 
+export interface StatsResponse {
+  active_games: number
+  players_online: number
+  occupied_players: number
+}
+
 export interface CreateSoloGameRequest {
   white_name?: string
   black_name?: string
@@ -282,6 +288,10 @@ export function leaveRoom(roomCode: string, payload: LeaveRoomRequest): Promise<
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export function getStats(): Promise<StatsResponse> {
+  return request<StatsResponse>('/stats')
 }
 
 export function getApiBaseUrl(): string {

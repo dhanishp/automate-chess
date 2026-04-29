@@ -8,7 +8,11 @@ from app.game.models import (
     CreateSoloGameRequest,
     GameMode,
     HumanSideChoice,
+    Phase,
+    PieceType,
+    PlacedPiece,
     ReplayMove,
+    Side,
 )
 from app.game.service import GameService
 
@@ -72,6 +76,52 @@ def test_finished_setup_generates_autoplay_data() -> None:
     assert game.result == "1/2-1/2"
 
 
+def test_final_white_king_placement_persists_and_generates_autoplay_once() -> None:
+    engine_provider = FakeEngineProvider()
+    service = GameService(engine_provider=engine_provider)
+    game = service.create_solo_game(CreateSoloGameRequest(mode=GameMode.BOT, human_side=HumanSideChoice.WHITE))
+    game.setup_turn = Side.WHITE
+    game.white.finished_spending = True
+    game.black.finished_spending = True
+    game.white.pieces = [PlacedPiece(type=PieceType.PAWN, square=square) for square in ["a2", "b2", "c2", "d2", "e2", "f2"]]
+    game.black.pieces = [PlacedPiece(type=PieceType.PAWN, square=square) for square in ["a7", "b7", "c7", "d7", "e7", "f7"]]
+    game.black.king_square = "g8"
+
+    updated = service.apply_action(
+        game.game_id,
+        ActionRequest(action_type=ActionType.PLACE_KING, side=Side.WHITE, square="g1"),
+    )
+
+    assert engine_provider.calls == 1
+    assert updated.white.king_square == "g1"
+    assert updated.black.king_square == "g8"
+    assert updated.phase == Phase.AUTOPLAY
+    assert updated.autoplay.status == "ready"
+
+
+def test_final_black_king_placement_persists_and_generates_autoplay_once() -> None:
+    engine_provider = FakeEngineProvider()
+    service = GameService(engine_provider=engine_provider)
+    game = service.create_solo_game(CreateSoloGameRequest(mode=GameMode.BOT, human_side=HumanSideChoice.BLACK))
+    game.setup_turn = Side.BLACK
+    game.white.finished_spending = True
+    game.black.finished_spending = True
+    game.white.pieces = [PlacedPiece(type=PieceType.PAWN, square=square) for square in ["a2", "b2", "c2", "d2", "e2", "f2"]]
+    game.black.pieces = [PlacedPiece(type=PieceType.PAWN, square=square) for square in ["a7", "b7", "c7", "d7", "e7", "f7"]]
+    game.white.king_square = "g1"
+
+    updated = service.apply_action(
+        game.game_id,
+        ActionRequest(action_type=ActionType.PLACE_KING, side=Side.BLACK, square="g8"),
+    )
+
+    assert engine_provider.calls == 1
+    assert updated.white.king_square == "g1"
+    assert updated.black.king_square == "g8"
+    assert updated.phase == Phase.AUTOPLAY
+    assert updated.autoplay.status == "ready"
+
+
 def test_engine_unavailable_does_not_store_half_completed_autoplay_state() -> None:
     service = GameService(engine_provider=UnavailableEngineProvider())
     game = service.create_solo_game(CreateSoloGameRequest())
@@ -80,17 +130,14 @@ def test_engine_unavailable_does_not_store_half_completed_autoplay_state() -> No
     for action in actions[:-1]:
         game = service.apply_action(game.game_id, action)
 
-    try:
-        service.apply_action(game.game_id, actions[-1])
-    except EngineUnavailableError as exc:
-        assert "Stockfish missing" in str(exc)
-    else:
-        raise AssertionError("Expected engine-unavailable error.")
+    game = service.apply_action(game.game_id, actions[-1])
 
     persisted = service.get_game(game.game_id)
-    assert persisted.phase == "setup"
-    assert persisted.black.king_square is None
-    assert persisted.autoplay.status == "not_ready"
+    assert game.phase == "autoplay"
+    assert persisted.phase == "autoplay"
+    assert persisted.black.king_square == "g8"
+    assert persisted.autoplay.status == "failed"
+    assert "Stockfish missing" in (persisted.autoplay.error or "")
 
 
 def test_create_sample_game_is_mid_setup_sandbox() -> None:

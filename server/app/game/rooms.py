@@ -87,6 +87,25 @@ class RoomService:
         self._update_room_status(room)
         return self.room_response(None, room, player_token, player_side)
 
+    def stats(self) -> dict[str, int]:
+        players_online = 0
+        occupied_players = 0
+
+        for room in self._rooms.values():
+            occupied_players += 1
+            if room.white_player.connected:
+                players_online += 1
+            if room.black_player is not None:
+                occupied_players += 1
+                if room.black_player.connected:
+                    players_online += 1
+
+        return {
+            "active_games": len(self._rooms),
+            "players_online": players_online,
+            "occupied_players": occupied_players,
+        }
+
     def leave_room(self, room_code: str, request: LeaveRoomRequest) -> tuple[RoomState | None, Side]:
         normalized_room_code = self._normalize_room_code(room_code)
         room = self._get_room(normalized_room_code)
