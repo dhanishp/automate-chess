@@ -23,6 +23,7 @@ interface SidebarProps {
   roomCode: string | null
   roomStatus: RoomStatus | null
   humanSideLabel: string | null
+  shopPreviewSide: Side
   isHumanSetupTurn: boolean
   errorMessage: string | null
   blockingMessage: string | null
@@ -31,11 +32,14 @@ interface SidebarProps {
   canPlaceKing: boolean
   finishSetupReason: string | null
   kingPlacementReason: string | null
+  sharedRequirementReason: string | null
   onSelectPiece: (piece: PieceType) => void
   onFinishSetup: () => void
+  onCopyInviteLink?: () => void
   onRefresh: () => void
   onLoadSample: () => void
   onDownloadLog: () => void
+  inviteCopied?: boolean
   statusTone: 'setup' | 'autoplay' | 'complete'
 }
 
@@ -48,6 +52,16 @@ function formatPhase(phase: GameState['phase']): string {
     .split('_')
     .map((part) => part[0].toUpperCase() + part.slice(1))
     .join(' ')
+}
+
+function InviteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="metric-action-icon">
+      <path d="M9.5 14.5l5-5" />
+      <path d="M13.5 6.5l1.1-1.1a4 4 0 0 1 5.7 5.7l-2.2 2.2a4 4 0 0 1-5.7 0" />
+      <path d="M10.5 17.5l-1.1 1.1a4 4 0 0 1-5.7-5.7l2.2-2.2a4 4 0 0 1 5.7 0" />
+    </svg>
+  )
 }
 
 function getOccupiedSquares(game: GameState): Set<string> {
@@ -143,6 +157,7 @@ export function Sidebar({
   roomCode,
   roomStatus,
   humanSideLabel,
+  shopPreviewSide,
   isHumanSetupTurn,
   errorMessage,
   blockingMessage,
@@ -151,41 +166,53 @@ export function Sidebar({
   canPlaceKing,
   finishSetupReason,
   kingPlacementReason,
+  sharedRequirementReason,
   onSelectPiece,
   onFinishSetup,
+  onCopyInviteLink,
   onRefresh,
   onLoadSample,
   onDownloadLog,
+  inviteCopied = false,
   statusTone,
 }: SidebarProps) {
   const activePlayer = game[game.setup_turn]
-  const canInteract = isSetupActive && pendingActionLabel === null && (!isBotGame || isHumanSetupTurn) && (!isMultiplayer || roomStatus === 'active')
+  const canInteract = isSetupActive && pendingActionLabel === null && isHumanSetupTurn && (!isMultiplayer || roomStatus === 'active')
   const activeSideLabel = formatSide(game.setup_turn)
+  const shopPreviewSideLabel = formatSide(shopPreviewSide)
   const isLivePhase = isSetupActive
   const turnSummary = isMultiplayer
     ? roomStatus === 'waiting'
       ? 'Waiting for opponent'
       : isHumanSetupTurn
-        ? `Your turn as ${activeSideLabel}`
-        : `Opponent is placing for ${activeSideLabel}`
+        ? `Your turn: ${activeSideLabel}`
+        : `Opponent placing ${activeSideLabel}`
     : isBotGame
     ? isHumanSetupTurn
-      ? `Your turn as ${activeSideLabel}`
-      : `Easy bot is placing for ${activeSideLabel}`
+      ? `Your turn: ${activeSideLabel}`
+      : `Bot placing ${activeSideLabel}`
     : `${activeSideLabel} to move`
   const pieceOptions = (['P', 'N', 'B', 'R', 'Q', 'K'] as PieceType[]).map((piece) => ({
     piece,
     label: PIECE_LABELS[piece],
     cost: game.rules.costs[piece],
-    enabled: canPlacePieceTypeNow(game, piece),
+    enabled: canInteract && canPlacePieceTypeNow(game, piece),
   }))
+  const finishSetupLabel =
+    isMultiplayer && roomStatus === 'waiting'
+      ? 'Waiting for opponent'
+      : isMultiplayer && !isHumanSetupTurn
+        ? `Waiting for ${activeSideLabel}`
+        : isBotGame && !isHumanSetupTurn
+          ? 'Waiting for bot'
+          : `Finish setup for ${activeSideLabel}`
 
   return (
     <aside className="sidebar">
       <section className="panel status-panel premium-card">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Current Status</p>
+            <p className="eyebrow">Setup Status</p>
             <h2 className="status-title">{formatPhase(game.phase)}</h2>
           </div>
           <button type="button" className="button ghost small" onClick={onRefresh} disabled={pendingActionLabel !== null}>
@@ -195,11 +222,11 @@ export function Sidebar({
 
         <div className="status-line">
           <span className={`live-dot tone-${statusTone} ${isLivePhase ? 'on' : ''}`} />
-          <strong>{isSetupActive ? turnSummary : 'Setup interactions disabled'}</strong>
-          <span className={`status-chip tone-${statusTone}`}>{isLivePhase ? 'Live phase' : 'Locked'}</span>
+          <strong>{isSetupActive ? turnSummary : 'Setup locked'}</strong>
+          <span className={`status-chip tone-${statusTone}`}>{isLivePhase ? 'Live' : 'Locked'}</span>
         </div>
 
-        <div className="status-metrics">
+        <div className={`status-metrics ${isMultiplayer ? 'room-info-grid' : ''}`}>
           {(isBotGame || isMultiplayer) ? (
             <div className="metric-card">
               <span>You</span>
@@ -209,7 +236,7 @@ export function Sidebar({
           {isBotGame ? (
             <div className="metric-card">
               <span>Mode</span>
-              <strong>Solo vs Bot</strong>
+              <strong>Singleplayer vs Bot</strong>
             </div>
           ) : null}
           {isMultiplayer ? (
@@ -224,6 +251,15 @@ export function Sidebar({
               <strong>{roomCode ?? '—'}</strong>
             </div>
           ) : null}
+          {isMultiplayer && roomCode && onCopyInviteLink ? (
+            <button type="button" className="metric-card metric-card-button invite-metric-card" onClick={onCopyInviteLink}>
+              <span className="metric-action-label">
+                Invite
+                <InviteIcon />
+              </span>
+              <strong>{inviteCopied ? 'Copied invite link' : 'Copy invite link'}</strong>
+            </button>
+          ) : null}
         </div>
       </section>
 
@@ -231,24 +267,24 @@ export function Sidebar({
         <div className="panel-heading compact">
           <div>
             <p className="eyebrow">Piece Shop</p>
-            <h2>Choose Formation</h2>
+            <h2>Build Formation</h2>
           </div>
         </div>
         <p className="panel-copy">
           {isMultiplayer && roomStatus === 'waiting'
-            ? 'Share the room code with your opponent. Setup will unlock automatically as soon as Black joins.'
+            ? 'Share the room code. Setup unlocks when Black joins.'
             : isMultiplayer && !isHumanSetupTurn
-              ? `Your opponent is acting for ${activeSideLabel.toLowerCase()}. The board will unlock when your turn starts.`
+              ? `Opponent is placing ${activeSideLabel.toLowerCase()}. Your board unlocks on your turn.`
             : isBotGame && !isHumanSetupTurn
-            ? `The bot is acting for ${activeSideLabel.toLowerCase()}. Piece selection will unlock again when your next setup turn starts.`
-            : `Select a piece, then click a legal square. The shop previews currently show the ${activeSideLabel.toLowerCase()} side.`}
+            ? `The bot is placing ${activeSideLabel.toLowerCase()}. Controls return on your next turn.`
+            : `Choose a piece, then click a highlighted square. Kings are placed last.`}
         </p>
         <div className="shop-points-strip">
-          <div className={`shop-points-card ${game.setup_turn === 'white' ? 'active' : ''}`}>
+          <div className={`shop-points-card side-white ${game.setup_turn === 'white' ? 'active' : ''}`}>
             <span>White</span>
             <strong>{game.white.points_remaining}</strong>
           </div>
-          <div className={`shop-points-card ${game.setup_turn === 'black' ? 'active' : ''}`}>
+          <div className={`shop-points-card side-black ${game.setup_turn === 'black' ? 'active' : ''}`}>
             <span>Black</span>
             <strong>{game.black.points_remaining}</strong>
           </div>
@@ -259,7 +295,7 @@ export function Sidebar({
         </div>
         <div className="shop-preview-badge">
           <span className="shop-preview-dot" />
-          Previewing {activeSideLabel}
+          Previewing {shopPreviewSideLabel}
         </div>
         <div className="piece-grid">
           {pieceOptions.map(({ piece, label, cost, enabled }) => {
@@ -276,7 +312,7 @@ export function Sidebar({
               disabled={isLocked}
             >
               <span className="piece-button-icon">
-                <PieceGlyph piece={piece} side={game.setup_turn} tone="shop" className="shop-piece" />
+                <PieceGlyph piece={piece} side={shopPreviewSide} tone="shop" className="shop-piece" />
               </span>
               <span className="piece-button-copy">
                 <strong>{label}</strong>
@@ -300,18 +336,18 @@ export function Sidebar({
       <section className="panel premium-card">
         <div className="panel-heading compact">
           <div>
-            <p className="eyebrow">Primary Actions</p>
-            <h2>{isSetupActive ? 'Commit Move' : 'Next Stage'}</h2>
+            <p className="eyebrow">Actions</p>
+            <h2>{isSetupActive ? 'Setup Actions' : 'Next Stage'}</h2>
           </div>
         </div>
 
         {isSetupActive ? (
           <>
             <button type="button" className="button primary action-button" onClick={onFinishSetup} disabled={!canInteract || !canFinishSetup}>
-              Finish setup for {formatSide(game.setup_turn)}
+              {finishSetupLabel}
             </button>
             {canFinishSetup ? (
-              <p className="hint-message compact-hint">Finishing setup locks spending for this side. You will only place the king after confirming.</p>
+              <p className="hint-message compact-hint">Lock this side's budget. King placement comes next.</p>
             ) : null}
             <button
               type="button"
@@ -319,23 +355,23 @@ export function Sidebar({
               onClick={onLoadSample}
               disabled={!canInteract || isMultiplayer}
             >
-              Load sample setup
+              Load sample
             </button>
           </>
         ) : (
           <>
-            <p className="hint-message">Setup is complete. Autoplay state is read-only from here.</p>
+            <p className="hint-message">Setup is locked. Replay state is read-only.</p>
           </>
         )}
 
         {isMultiplayer && isSetupActive && roomStatus === 'waiting' && !pendingActionLabel ? (
-          <p className="status-message">Waiting for Black to join this room. Share the room code to begin live setup.</p>
+          <p className="status-message">Waiting for Black. Share the room code to begin.</p>
         ) : null}
         {isMultiplayer && isSetupActive && roomStatus === 'active' && !isHumanSetupTurn && !pendingActionLabel ? (
-          <p className="status-message">Your opponent is taking their setup turn. Live updates will appear automatically.</p>
+          <p className="status-message">Opponent turn. Live updates appear automatically.</p>
         ) : null}
         {isBotGame && isSetupActive && !isHumanSetupTurn && !pendingActionLabel ? (
-          <p className="status-message">Easy bot is taking its setup turn. Human controls will unlock automatically after the bot responds.</p>
+          <p className="status-message">Bot turn. Controls unlock after it responds.</p>
         ) : null}
         {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
         {blockingMessage ? <p className="warning-message">{blockingMessage}</p> : null}
@@ -345,7 +381,7 @@ export function Sidebar({
       <section className="panel premium-card">
         <div className="panel-heading compact">
           <div>
-            <p className="eyebrow">Turn Requirements</p>
+            <p className="eyebrow">Setup Requirements</p>
             <h2>Validation</h2>
           </div>
         </div>
@@ -354,27 +390,28 @@ export function Sidebar({
           <>
             <div className="requirement-list">
               <div className="requirement-row">
-                <span>Mandatory pawns</span>
+                <span>Pawns placed</span>
                 <strong>{activePlayer.pieces.filter((piece) => piece.type === 'P').length}/{game.rules.mandatory_pawns}</strong>
               </div>
               <div className="requirement-row">
-                <span>Finish setup allowed</span>
+                <span>Can finish</span>
                 <strong className={canFinishSetup ? 'ok' : 'blocked'}>{canFinishSetup ? 'Yes' : 'No'}</strong>
               </div>
               <div className="requirement-row">
-                <span>King placement allowed</span>
+                <span>Can place king</span>
                 <strong className={canPlaceKing ? 'ok' : 'blocked'}>{canPlaceKing ? 'Yes' : 'No'}</strong>
               </div>
               <div className="requirement-row">
-                <span>Spending finished</span>
+                <span>Budget locked</span>
                 <strong className={activePlayer.finished_spending ? 'ok' : 'blocked'}>{activePlayer.finished_spending ? 'Yes' : 'No'}</strong>
               </div>
               <div className="requirement-row">
-                <span>King placed</span>
+                <span>King</span>
                 <strong>{activePlayer.king_square ?? 'Not yet'}</strong>
               </div>
             </div>
 
+            {sharedRequirementReason ? <p className="hint-message">{sharedRequirementReason}</p> : null}
             {kingPlacementReason ? <p className="hint-message">{kingPlacementReason}</p> : null}
             {finishSetupReason ? <p className="hint-message">{finishSetupReason}</p> : null}
           </>
@@ -389,12 +426,12 @@ export function Sidebar({
               <strong className={game.black.king_square ? 'ok' : 'blocked'}>{game.black.king_square ?? 'Missing'}</strong>
             </div>
             <div className="requirement-row">
-              <span>Setup phase</span>
+              <span>Setup</span>
               <strong className="ok">Complete</strong>
             </div>
             <div className="requirement-row">
               <span>Next stage</span>
-              <strong>Autoplay pending</strong>
+              <strong>Calculating soon</strong>
             </div>
           </div>
         )}

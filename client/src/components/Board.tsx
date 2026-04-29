@@ -13,6 +13,7 @@ interface BoardProps {
   activeSide: Side
   interactive: boolean
   disabledAppearance?: boolean
+  legalTargetSquares?: string[]
   selectedSquare: string | null
   selectedModeLabel: string
   squares: BoardSquareData[]
@@ -23,11 +24,14 @@ export function Board({
   activeSide,
   interactive,
   disabledAppearance = !interactive,
+  legalTargetSquares = [],
   selectedSquare,
   selectedModeLabel,
   squares,
   onSquareClick,
 }: BoardProps) {
+  const legalTargets = new Set(legalTargetSquares)
+
   return (
     <div className="board-wrap">
       <div className="board-meta">
@@ -46,12 +50,13 @@ export function Board({
           const file = FILES[index % 8]
           const isDark = (Math.floor(index / 8) + (index % 8)) % 2 === 1
           const isSelected = selectedSquare === squareData.square
+          const isLegalTarget = legalTargets.has(squareData.square)
 
           return (
             <button
               key={squareData.square}
               type="button"
-              className={`board-square ${isDark ? 'dark' : 'light'} ${isSelected ? 'selected' : ''}`}
+              className={`board-square ${isDark ? 'dark' : 'light'} ${isSelected ? 'selected' : ''} ${isLegalTarget ? 'legal-target' : ''}`}
               onClick={() => {
                 if (interactive) {
                   onSquareClick(squareData.square)
@@ -59,10 +64,11 @@ export function Board({
               }}
               disabled={!interactive && disabledAppearance}
               aria-disabled={!interactive}
-              aria-label={`${squareData.square}${squareData.piece ? ` occupied by ${squareData.side} ${squareData.piece}` : ''}`}
+              aria-label={`${squareData.square}${squareData.piece ? ` occupied by ${squareData.side} ${squareData.piece}` : ''}${isLegalTarget ? ' legal placement target' : ''}`}
             >
               <span className="square-rank">{file === 'a' ? rank : ''}</span>
               <span className="square-file">{rank === 1 ? file : ''}</span>
+              {isLegalTarget ? <span className="legal-target-marker" aria-hidden="true" /> : null}
               <span className="piece-slot" aria-hidden="true">
                 {squareData.piece && squareData.side ? (
                   <PieceGlyph

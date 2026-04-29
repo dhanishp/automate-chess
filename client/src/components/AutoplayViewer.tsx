@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Board } from './Board'
+import { ConfirmationModal } from './ConfirmationModal'
 import { buildBoardFromFen } from '../lib/board'
 import type { GameState } from '../lib/api'
 
@@ -31,10 +32,89 @@ function formatReplayResult(result: string | null | undefined): string {
   }
 }
 
+function buildReplayNotation(game: GameState, resultLabel: string): string {
+  const lines = [
+    'Automate Chess replay',
+    `Result: ${resultLabel}`,
+    `Starting FEN: ${game.autoplay.initial_fen ?? 'Unavailable'}`,
+    `Final FEN: ${game.autoplay.final_fen ?? 'Unavailable'}`,
+    '',
+    'Moves:',
+  ]
+
+  if (game.autoplay.moves.length === 0) {
+    lines.push('No engine moves recorded.')
+  } else {
+    lines.push(
+      ...game.autoplay.moves.map((move) => `${move.ply}. ${move.san} (${move.uci})`),
+    )
+  }
+
+  return lines.join('\n')
+}
+
+async function writeTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textArea = document.createElement('textarea')
+  textArea.value = text
+  textArea.setAttribute('readonly', '')
+  textArea.style.position = 'fixed'
+  textArea.style.opacity = '0'
+  document.body.append(textArea)
+  textArea.select()
+  const copied = document.execCommand('copy')
+  textArea.remove()
+
+  if (!copied) {
+    throw new Error('Clipboard copy failed.')
+  }
+}
+
+function StepBackIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="control-icon">
+      <path d="M11 6l-6 6 6 6" />
+      <path d="M19 6l-6 6 6 6" />
+    </svg>
+  )
+}
+
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="control-icon">
+      <path d="M8 5v14" />
+      <path d="M16 5v14" />
+    </svg>
+  )
+}
+
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="control-icon">
+      <path d="M8 5l11 7-11 7Z" />
+    </svg>
+  )
+}
+
+function StepForwardIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="control-icon">
+      <path d="M13 6l6 6-6 6" />
+      <path d="M5 6l6 6-6 6" />
+    </svg>
+  )
+}
+
 export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outcomeKnown, onOutcomeReveal }: AutoplayViewerProps) {
   const [currentPly, setCurrentPly] = useState(0)
   const [isPlaying, setIsPlaying] = useState(true)
   const [speedLabel, setSpeedLabel] = useState<(typeof PLAYBACK_SPEEDS)[number]['label']>('Normal')
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [replayConfirmation, setReplayConfirmation] = useState<'restart' | 'new_game' | null>(null)
   const activeMoveRef = useRef<HTMLButtonElement | null>(null)
   const moveListRef = useRef<HTMLOListElement | null>(null)
   const moves = game.autoplay.moves
@@ -50,6 +130,8 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
   useEffect(() => {
     setCurrentPly(0)
     setIsPlaying(true)
+    setCopyStatus('idle')
+    setReplayConfirmation(null)
   }, [game.game_id, game.autoplay.initial_fen, totalPlies])
 
   useEffect(() => {
@@ -108,13 +190,52 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
     [currentFen],
   )
 
+  async function handleCopyMoveList() {
+    try {
+      await writeTextToClipboard(buildReplayNotation(game, resultLabel))
+      setCopyStatus('copied')
+      window.setTimeout(() => setCopyStatus('idle'), 1800)
+    } catch {
+      setCopyStatus('failed')
+    }
+  }
+
+  function restartReplay() {
+    setCurrentPly(0)
+    setIsPlaying(true)
+  }
+
+  const replayConfirmationModal = replayConfirmation ? (
+    <ConfirmationModal
+      eyebrow={replayConfirmation === 'restart' ? 'Restart replay' : 'New setup'}
+      title={replayConfirmation === 'restart' ? 'Restart replay?' : 'Start a new game?'}
+      message={
+        replayConfirmation === 'restart'
+          ? 'Return to the starting position and play this line from the beginning.'
+          : 'Leave this replay and begin a fresh formation.'
+      }
+      confirmLabel={replayConfirmation === 'restart' ? 'Restart replay' : 'New game'}
+      confirmTone={replayConfirmation === 'restart' ? 'primary' : 'danger'}
+      onCancel={() => setReplayConfirmation(null)}
+      onConfirm={() => {
+        if (replayConfirmation === 'restart') {
+          restartReplay()
+        } else {
+          onNewGame()
+        }
+        setReplayConfirmation(null)
+      }}
+    />
+  ) : null
+
   return (
+    <>
     <main className="layout">
       <section className="board-column">
         <div className="board-stage">
           <div className="stage-heading">
             <div>
-              <p className="eyebrow">Autoplay Replay</p>
+              <p className="eyebrow">Replay</p>
               <h2>
                 {replayFinished
                   ? `Replay complete (${totalPlies}/${totalPlies})`
@@ -145,21 +266,18 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
                         <p className="eyebrow">Final Result</p>
                         <h2>{resultLabel}</h2>
                       </div>
-                      <span className="status-chip complete-chip">Replay Complete</span>
+                      <span className="status-chip complete-chip">Complete</span>
                     </div>
                     <p className="panel-copy">
                       {finalMove
-                        ? `Final move: ${finalMove.san}. The replay has reached the finished position.`
-                        : 'The replay has reached the finished position.'}
+                        ? `Final move: ${finalMove.san}. The finished position is resolved.`
+                        : 'The finished position is resolved.'}
                     </p>
                     <div className="playback-controls playback-controls-end">
                       <button
                         type="button"
                         className="button primary action-button"
-                        onClick={() => {
-                          setCurrentPly(0)
-                          setIsPlaying(true)
-                        }}
+                        onClick={() => setReplayConfirmation('restart')}
                       >
                         Replay again
                       </button>
@@ -172,9 +290,9 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
                         }}
                         disabled={totalPlies === 0}
                       >
-                        Step through final position
+                        Review final position
                       </button>
-                      <button type="button" className="button action-button" onClick={onNewGame}>
+                      <button type="button" className="button action-button" onClick={() => setReplayConfirmation('new_game')}>
                         New game
                       </button>
                       <button type="button" className="button ghost action-button" onClick={onBackToMenu}>
@@ -193,7 +311,7 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
         <section className="panel premium-card status-panel">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">Autoplay Status</p>
+              <p className="eyebrow">Replay Status</p>
               <h2 className="status-title">Replay Ready</h2>
             </div>
             <button type="button" className="button ghost small" onClick={onRefresh}>
@@ -202,9 +320,9 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
           </div>
           <div className="status-line">
             <span className={`live-dot tone-${replayFinished ? 'complete' : 'autoplay'} ${replayFinished || isPlaying ? 'on' : ''}`} />
-            <strong>{replayFinished ? 'Replay complete' : isPlaying ? 'Animating moves' : 'Replay paused'}</strong>
+            <strong>{replayFinished ? 'Replay complete' : isPlaying ? 'Playing replay' : 'Replay paused'}</strong>
             <span className={`status-chip tone-${replayFinished ? 'complete' : 'autoplay'} ${replayFinished ? 'complete-chip' : ''}`}>
-              {replayFinished ? 'Final' : 'Live'}
+              {replayFinished ? 'Final' : 'Playing'}
             </span>
           </div>
           <div className="status-metrics">
@@ -246,21 +364,22 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
               </button>
             ))}
           </div>
-          <div className="playback-controls">
+          <div className="playback-controls playback-controls-transport" role="group" aria-label="Replay transport controls">
             <button
               type="button"
-              className="button action-button"
+              className="button action-button icon-action"
               onClick={() => {
                 setIsPlaying(false)
                 setCurrentPly((ply) => Math.max(0, ply - 1))
               }}
               disabled={currentPly === 0}
             >
-              Step Back
+              <StepBackIcon />
+              <span>Back</span>
             </button>
             <button
               type="button"
-              className="button primary action-button"
+              className="button primary action-button icon-action"
               onClick={() => {
                 if (replayFinished) {
                   setCurrentPly(0)
@@ -271,15 +390,28 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
               }}
               disabled={totalPlies === 0}
             >
-              {replayFinished ? 'Replay again' : isPlaying ? 'Pause' : 'Resume'}
+              {replayFinished || !isPlaying ? <PlayIcon /> : <PauseIcon />}
+              <span>{replayFinished ? 'Replay' : isPlaying ? 'Pause' : 'Resume'}</span>
             </button>
             <button
               type="button"
-              className="button action-button"
+              className="button action-button icon-action"
               onClick={() => {
-                setCurrentPly(0)
-                setIsPlaying(true)
+                setIsPlaying(false)
+                setCurrentPly((ply) => Math.min(totalPlies, ply + 1))
               }}
+              disabled={currentPly >= totalPlies}
+            >
+              <StepForwardIcon />
+              <span>Forward</span>
+            </button>
+          </div>
+
+          <div className="playback-controls playback-controls-secondary">
+            <button
+              type="button"
+              className="button action-button"
+              onClick={() => setReplayConfirmation('restart')}
               disabled={totalPlies === 0}
             >
               Restart
@@ -293,21 +425,10 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
               }}
               disabled={totalPlies === 0 || replayFinished}
             >
-              Skip simulation
-            </button>
-            <button
-              type="button"
-              className="button action-button"
-              onClick={() => {
-                setIsPlaying(false)
-                setCurrentPly((ply) => Math.min(totalPlies, ply + 1))
-              }}
-              disabled={currentPly >= totalPlies}
-            >
-              Step Forward
+              Jump to end
             </button>
             <button type="button" className="button ghost action-button" onClick={onBackToMenu}>
-              Back to Menu
+              Back to menu
             </button>
           </div>
         </section>
@@ -316,9 +437,17 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
           <div className="panel-heading compact">
             <div>
               <p className="eyebrow">Move List</p>
-              <h2>Engine Game</h2>
+              <h2>Replay Notation</h2>
             </div>
+            <button type="button" className="button ghost small copy-move-button" onClick={() => void handleCopyMoveList()}>
+              Copy move list
+            </button>
           </div>
+          {copyStatus !== 'idle' ? (
+            <p className={copyStatus === 'copied' ? 'status-message copy-status' : 'error-message copy-status'}>
+              {copyStatus === 'copied' ? 'Copied replay notation.' : 'Copy failed. Try selecting the move list manually.'}
+            </p>
+          ) : null}
           <ol className="move-list" ref={moveListRef}>
             {moves.map((move, index) => (
               <li key={`${move.ply}-${move.uci}`} className={index + 1 === currentPly ? 'active' : ''}>
@@ -341,5 +470,7 @@ export function AutoplayViewer({ game, onRefresh, onNewGame, onBackToMenu, outco
         </section>
       </aside>
     </main>
+    {replayConfirmationModal}
+    </>
   )
 }

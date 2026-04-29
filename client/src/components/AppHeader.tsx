@@ -1,9 +1,10 @@
-export type HeaderTone = 'setup' | 'autoplay' | 'complete'
+export type HeaderTone = 'setup' | 'autoplay' | 'complete' | 'connected' | 'connecting' | 'disconnected'
 export type AppTheme = 'dark' | 'light'
 
 interface AppHeaderProps {
-  primaryPill: string
+  primaryPill?: string
   secondaryPill?: string
+  secondaryTone?: HeaderTone
   tone: HeaderTone
   theme: AppTheme
   onToggleTheme: () => void
@@ -41,6 +42,7 @@ function ExitIcon() {
 export function AppHeader({
   primaryPill,
   secondaryPill,
+  secondaryTone,
   tone,
   theme,
   onToggleTheme,
@@ -68,13 +70,15 @@ export function AppHeader({
           {theme === 'dark' ? <MoonIcon /> : <SunIcon />}
           <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
         </button>
-        <div className={`pill tone-${tone}`}>
-          <span className={`pill-dot tone-${tone}`} aria-hidden="true" />
-          <span>{primaryPill}</span>
-        </div>
-        {secondaryPill ? (
+        {primaryPill ? (
           <div className={`pill tone-${tone}`}>
             <span className={`pill-dot tone-${tone}`} aria-hidden="true" />
+            <span>{primaryPill}</span>
+          </div>
+        ) : null}
+        {secondaryPill ? (
+          <div className={`pill tone-${secondaryTone ?? tone}`}>
+            <span className={`pill-dot tone-${secondaryTone ?? tone}`} aria-hidden="true" />
             <span>{secondaryPill}</span>
           </div>
         ) : null}

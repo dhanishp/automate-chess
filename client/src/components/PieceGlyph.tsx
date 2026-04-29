@@ -32,11 +32,12 @@ function PieceSvg({
         <svg viewBox="0 0 64 64" className={className} aria-hidden="true">
           <path
             className="piece-base"
-            d="M21 51V45l9-8-5-10 6-14 10 5 3 10-5 5 5 6v12H21Z"
+            d="M19.5 51v-6.2c0-5.4 2.8-9.7 8.3-13l-3-7.6 6.2-12.7 5 4.4 8.4 1.7 5.8 8.4-8.2 2.7 5.8 8.2V51H19.5Z"
           />
-          <path className="piece-detail" d="M31 18c4 1 7 3 10 7" />
-          <path className="piece-detail" d="M28 29c3 1 7 1 11-1" />
-          <circle className="piece-detail-dot" cx="35.5" cy="23" r="1.7" />
+          <path className="piece-detail" d="M31.2 15.5c-0.7 6.8-3.3 13.1-7.9 18.9" />
+          <path className="piece-detail" d="M27 35.6c4.7-2.4 9.7-2.8 15-1.3" />
+          <path className="piece-detail" d="M42 28.7l4.5-1.5" />
+          <circle className="piece-detail-dot" cx="38.3" cy="22.7" r="1.45" />
           <path className="piece-base" d="M18 52h30v4H18z" />
         </svg>
       )
@@ -73,10 +74,10 @@ function PieceSvg({
     case 'K':
       return (
         <svg viewBox="0 0 64 64" className={className} aria-hidden="true">
-          <path className="piece-base" d="M24 23h16l-2 8 5 7-6 11H27l-6-11 5-7-2-8Z" />
+          <path className="piece-base" d="M24 24h16l-2 7.4 5 7-6 10.6H27l-6-10.6 5-7-2-7.4Z" />
           <path className="piece-detail" d="M24 35c5-2 11-2 16 0" />
-          <path className="piece-king-cross" d="M32 9v12" />
-          <path className="piece-king-cross" d="M26 15h12" />
+          <path className="piece-king-cross-fill" d="M30 8.4h4v6h5.8v3.8H34v6.1h-4v-6.1h-5.8v-3.8H30Z" />
+          <circle className="piece-detail-dot" cx="32" cy="24" r="2" />
           <path className="piece-base" d="M18 52h28v5H18z" />
         </svg>
       )

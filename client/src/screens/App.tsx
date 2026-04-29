@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { AppHeader, type AppTheme, type HeaderTone } from '../components/AppHeader'
 import { AutoplayViewer } from '../components/AutoplayViewer'
 import { Board, type BoardSquareData } from '../components/Board'
+import { ConfirmationModal } from '../components/ConfirmationModal'
 import { Sidebar } from '../components/Sidebar'
 import {
   ApiError,
@@ -156,22 +157,9 @@ function formatPhaseLabel(phase: GameState['phase']): string {
     .join(' ')
 }
 
-function formatReplayResult(result: string | null | undefined): string {
-  switch (result) {
-    case '1-0':
-      return 'White wins'
-    case '0-1':
-      return 'Black wins'
-    case '1/2-1/2':
-      return 'Draw'
-    default:
-      return result ?? 'Pending'
-  }
-}
-
 function formatModeLabel(mode: GameMode): string {
   if (mode === 'bot') {
-    return 'Solo vs Bot'
+    return 'Singleplayer vs Bot'
   }
   if (mode === 'multiplayer') {
     return 'Multiplayer Room'
@@ -181,6 +169,139 @@ function formatModeLabel(mode: GameMode): string {
 
 function formatSideLabel(side: Side): string {
   return side[0].toUpperCase() + side.slice(1)
+}
+
+function getOpponentSide(side: Side): Side {
+  return side === 'white' ? 'black' : 'white'
+}
+
+function getOccupiedSquares(game: GameState): Set<string> {
+  const occupied = new Set<string>()
+
+  for (const side of ['white', 'black'] as Side[]) {
+    for (const piece of game[side].pieces) {
+      occupied.add(piece.square)
+    }
+
+    if (game[side].king_square) {
+      occupied.add(game[side].king_square)
+    }
+  }
+
+  return occupied
+}
+
+function getSquaresForRanks(ranks: number[]): string[] {
+  return FILES.flatMap((file) => ranks.map((rank) => `${file}${rank}`))
+}
+
+function canKeepPawnPathViable(
+  game: GameState,
+  side: Side,
+  piece: PieceType,
+  square: string,
+  occupiedSquares: Set<string>,
+): boolean {
+  const player = game[side]
+  const pawnCost = game.rules.costs.P
+  const cost = game.rules.costs[piece]
+  const pawnCountAfterMove = player.pieces.filter((placed) => placed.type === 'P').length + (piece === 'P' ? 1 : 0)
+  const remainingRequiredPawns = Math.max(game.rules.mandatory_pawns - pawnCountAfterMove, 0)
+  const remainingPoints = player.points_remaining - cost
+
+  if (remainingPoints < remainingRequiredPawns * pawnCost) {
+    return false
+  }
+
+  const occupiedAfterMove = new Set(occupiedSquares)
+  occupiedAfterMove.add(square)
+  const pawnSquares = getSquaresForRanks(game.rules.pawn_ranks[side])
+  const remainingPawnSquares = pawnSquares.filter((candidate) => !occupiedAfterMove.has(candidate)).length
+
+  return remainingPawnSquares >= remainingRequiredPawns
+}
+
+function getLegalPlacementSquares(
+  game: GameState,
+  selectedPiece: PieceType | null,
+  isKingPlacementMode: boolean,
+  canPlaceKing: boolean,
+  canAct: boolean,
+): string[] {
+  if (game.phase !== 'setup' || !canAct) {
+    return []
+  }
+
+  const side = game.setup_turn
+  const occupiedSquares = getOccupiedSquares(game)
+
+  if (isKingPlacementMode) {
+    if (!canPlaceKing) {
+      return []
+    }
+
+    return getSquaresForRanks(game.rules.king_ranks[side]).filter((square) => !occupiedSquares.has(square))
+  }
+
+  if (!selectedPiece || selectedPiece === 'K') {
+    return []
+  }
+
+  const player = game[side]
+  if (player.finished_spending || game.rules.costs[selectedPiece] > player.points_remaining) {
+    return []
+  }
+
+  const candidateRanks = selectedPiece === 'P' ? game.rules.pawn_ranks[side] : game.rules.non_king_ranks[side]
+  return getSquaresForRanks(candidateRanks)
+    .filter((square) => !occupiedSquares.has(square))
+    .filter((square) => canKeepPawnPathViable(game, side, selectedPiece, square, occupiedSquares))
+}
+
+function formatRoomClosedMessage(message: string | null | undefined): string {
+  if (!message) {
+    return 'Room closed.'
+  }
+
+  return message.replace(' left. Room closed.', ' left the room. Room closed.')
+}
+
+function isClosedRoomMessage(message: string | null): boolean {
+  return Boolean(message && /room closed|room was closed|left the room|opponent left/i.test(message))
+}
+
+function getRoomConnectionTone(state: 'disconnected' | 'connecting' | 'connected'): HeaderTone {
+  if (state === 'connected') {
+    return 'connected'
+  }
+
+  if (state === 'connecting') {
+    return 'connecting'
+  }
+
+  return 'disconnected'
+}
+
+function isAutoplayTerminal(game: GameState): boolean {
+  return (game.autoplay.status === 'ready' && Boolean(game.autoplay.initial_fen)) || game.autoplay.status === 'failed'
+}
+
+function shouldLatchCalculatingOverlay(game: GameState): boolean {
+  if (isAutoplayTerminal(game)) {
+    return false
+  }
+
+  const bothKingsPlaced = Boolean(game.white.king_square && game.black.king_square)
+  const sharedAutoplayPending = game.autoplay.status === 'pending' || game.autoplay.status === 'running'
+  const setupTransitionWithoutReplay =
+    game.phase === 'ready_for_autoplay' ||
+    (game.phase === 'autoplay' && !game.autoplay.initial_fen)
+
+  return (
+    sharedAutoplayPending ||
+    bothKingsPlaced ||
+    setupTransitionWithoutReplay
+  )
 }
 
 function delay(ms: number): Promise<void> {
@@ -194,7 +315,7 @@ function getPreferredTheme(): AppTheme {
   return stored === 'light' ? 'light' : 'dark'
 }
 
-function getHeaderTone(game: GameState, replayFinished = false): HeaderTone {
+function getHeaderTone(game: GameState, replayFinished = false): 'setup' | 'autoplay' | 'complete' {
   if (replayFinished) {
     return 'complete'
   }
@@ -219,17 +340,18 @@ function getActivePlayerStatus(game: GameState) {
   })
 
   let finishSetupReason: string | null = null
+  let sharedRequirementReason: string | null = null
   if (activePlayer.finished_spending) {
     finishSetupReason = 'This side already finished spending.'
   } else if (!hasMinimumPawns) {
-    finishSetupReason = `${mandatoryPawnsRemaining} more mandatory pawn${mandatoryPawnsRemaining === 1 ? '' : 's'} needed before finishing setup.`
+    sharedRequirementReason = `Place ${mandatoryPawnsRemaining} more pawn${mandatoryPawnsRemaining === 1 ? '' : 's'} before finishing setup or placing your king.`
   }
 
   let kingPlacementReason: string | null = null
   if (activePlayer.king_square) {
     kingPlacementReason = 'This side has already placed its king.'
   } else if (!hasMinimumPawns) {
-    kingPlacementReason = `${mandatoryPawnsRemaining} more mandatory pawn${mandatoryPawnsRemaining === 1 ? '' : 's'} needed before king placement is legal.`
+    kingPlacementReason = null
   } else if (!spendingComplete) {
     kingPlacementReason = 'Finish spending, or reach zero points, before placing the king.'
   }
@@ -244,6 +366,7 @@ function getActivePlayerStatus(game: GameState) {
     canPlaceKing: !activePlayer.king_square && hasMinimumPawns && spendingComplete,
     finishSetupReason,
     kingPlacementReason,
+    sharedRequirementReason,
     blockingMessage,
   }
 }
@@ -262,11 +385,14 @@ export function App() {
     black: 'P',
   })
   const [isKingPlacementMode, setIsKingPlacementMode] = useState(false)
+  const [finishConfirmSide, setFinishConfirmSide] = useState<Side | null>(null)
+  const [menuConfirmOpen, setMenuConfirmOpen] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [loadingMessage, setLoadingMessage] = useState('Loading saved game...')
   const [pendingActionLabel, setPendingActionLabel] = useState<string | null>(null)
   const [isCalculatingAutoplay, setIsCalculatingAutoplay] = useState(false)
   const [autoplayTransitionLatched, setAutoplayTransitionLatched] = useState(false)
+  const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
   const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
   const [replayFinished, setReplayFinished] = useState(false)
   const actionInFlightRef = useRef(false)
@@ -277,6 +403,9 @@ export function App() {
   const heartbeatIntervalRef = useRef<number | null>(null)
   const firstSnapshotTimeoutRef = useRef<number | null>(null)
   const pollingIntervalRef = useRef<number | null>(null)
+  const inviteCopiedTimeoutRef = useRef<number | null>(null)
+  const inviteRoomCodeRef = useRef<string | null>(null)
+  const autoJoinAttemptedRef = useRef(false)
 
   useEffect(() => {
     roomStateRef.current = roomState
@@ -287,6 +416,34 @@ export function App() {
     document.documentElement.dataset.theme = theme
     window.localStorage.setItem(THEME_STORAGE_KEY, theme)
   }, [theme])
+
+  useEffect(() => {
+    const roomCode = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (roomCode) {
+      const normalizedRoomCode = roomCode.slice(0, 6)
+      inviteRoomCodeRef.current = normalizedRoomCode
+      setGameSetupMode('multiplayer')
+      setJoinRoomCode(normalizedRoomCode)
+    }
+
+    return () => {
+      if (inviteCopiedTimeoutRef.current !== null) {
+        window.clearTimeout(inviteCopiedTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const inviteRoomCode = inviteRoomCodeRef.current
+    if (!inviteRoomCode || autoJoinAttemptedRef.current || loadingMessage || game || roomSession) {
+      return
+    }
+
+    autoJoinAttemptedRef.current = true
+    setGameSetupMode('multiplayer')
+    setJoinRoomCode(inviteRoomCode)
+    void handleJoinRoom(inviteRoomCode)
+  }, [game, loadingMessage, roomSession])
 
   useEffect(() => {
     let cancelled = false
@@ -333,7 +490,11 @@ export function App() {
   }, [game])
 
   useEffect(() => {
-    if (!game || game.phase !== 'setup' || game.mode !== 'local') {
+    if (!game || game.phase !== 'setup' || game.mode === 'multiplayer') {
+      return
+    }
+
+    if (game.mode === 'bot' && game.human_side !== game.setup_turn) {
       return
     }
 
@@ -357,13 +518,14 @@ export function App() {
       return
     }
 
-    const bothKingsPlaced = Boolean(game.white.king_square && game.black.king_square)
-    const shouldLatch =
-      bothKingsPlaced &&
-      game.autoplay.status !== 'ready' &&
-      game.autoplay.status !== 'failed'
+    if (isAutoplayTerminal(game)) {
+      setAutoplayTransitionLatched(false)
+      return
+    }
 
-    setAutoplayTransitionLatched(shouldLatch)
+    if (shouldLatchCalculatingOverlay(game)) {
+      setAutoplayTransitionLatched(true)
+    }
   }, [game])
 
   function resetToLauncher(message: string | null = null) {
@@ -383,11 +545,14 @@ export function App() {
       black: 'P',
     })
     setIsKingPlacementMode(false)
+    setFinishConfirmSide(null)
+    setMenuConfirmOpen(false)
     setErrorMessage(message)
     setLoadingMessage('')
     setPendingActionLabel(null)
     setIsCalculatingAutoplay(false)
     setAutoplayTransitionLatched(false)
+    setInviteLinkCopied(false)
     setReplayFinished(false)
   }
 
@@ -435,10 +600,15 @@ export function App() {
         if (socket) {
           socket.close()
         }
-        resetToLauncher('Opponent left the room.')
+        resetToLauncher(`${formatSideLabel(getOpponentSide(roomSession.playerSide))} left the room. Room closed.`)
         return
       }
 
+      if (isAutoplayTerminal(room.game)) {
+        setAutoplayTransitionLatched(false)
+      } else if (shouldLatchCalculatingOverlay(room.game)) {
+        setAutoplayTransitionLatched(true)
+      }
       setRoomState(room)
       setGame(room.game)
     }
@@ -452,7 +622,7 @@ export function App() {
         return true
       } catch (error) {
         if (active) {
-          resetToLauncher(error instanceof ApiError && error.status === 404 ? 'This room was closed.' : getErrorMessage(error))
+          resetToLauncher(error instanceof ApiError && error.status === 404 ? 'Room closed. Start or join a new room.' : getErrorMessage(error))
         }
         return false
       }
@@ -521,7 +691,7 @@ export function App() {
 
         if (message.type === 'room_closed') {
           clearTimers()
-          resetToLauncher(message.message ?? 'This room was closed.')
+          resetToLauncher(formatRoomClosedMessage(message.message))
         }
       }
 
@@ -572,6 +742,21 @@ export function App() {
       : !isBotGame || game.human_side === game.setup_turn
   )
 
+  useEffect(() => {
+    if (!finishConfirmSide) {
+      return
+    }
+
+    if (!game || game.phase !== 'setup') {
+      setFinishConfirmSide(null)
+      return
+    }
+
+    if (finishConfirmSide !== game.setup_turn || !isHumanSetupTurn || !getActivePlayerStatus(game).canFinishSetup) {
+      setFinishConfirmSide(null)
+    }
+  }, [finishConfirmSide, game, isHumanSetupTurn])
+
   async function refreshGame() {
     if (!game || actionInFlightRef.current) {
       return
@@ -608,6 +793,19 @@ export function App() {
     resetToLauncher()
   }
 
+  function requestBackToMenu() {
+    if (!game || actionInFlightRef.current) {
+      return
+    }
+
+    setMenuConfirmOpen(true)
+  }
+
+  async function confirmBackToMenu() {
+    setMenuConfirmOpen(false)
+    await backToMenu()
+  }
+
   async function startNewGame(mode: GameMode = 'local', sideChoice: HumanSideChoice = 'white') {
     actionInFlightRef.current = false
     setStoredRoomSession(null)
@@ -615,10 +813,12 @@ export function App() {
     setRoomSession(null)
     setRoomConnectionState('disconnected')
     window.sessionStorage.removeItem(ROOM_SESSION_STORAGE_KEY)
-    setLoadingMessage(mode === 'bot' ? 'Creating solo vs bot game...' : 'Creating solo game...')
+    setLoadingMessage(mode === 'bot' ? 'Starting singleplayer bot match...' : 'Starting sandbox...')
     setPendingActionLabel(null)
     setErrorMessage(null)
     setIsKingPlacementMode(false)
+    setFinishConfirmSide(null)
+    setMenuConfirmOpen(false)
     setSelectedPiece('P')
     setSelectedPiecesBySide({
       white: 'P',
@@ -626,6 +826,7 @@ export function App() {
     })
     setIsCalculatingAutoplay(false)
     setAutoplayTransitionLatched(false)
+    setInviteLinkCopied(false)
     setReplayFinished(false)
 
     try {
@@ -648,10 +849,12 @@ export function App() {
   async function handleCreateRoom() {
     actionInFlightRef.current = false
     window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
-    setLoadingMessage('Creating multiplayer room...')
+    setLoadingMessage('Creating room...')
     setPendingActionLabel(null)
     setErrorMessage(null)
     setIsKingPlacementMode(false)
+    setFinishConfirmSide(null)
+    setMenuConfirmOpen(false)
     setSelectedPiece('P')
     setSelectedPiecesBySide({
       white: 'P',
@@ -659,6 +862,7 @@ export function App() {
     })
     setIsCalculatingAutoplay(false)
     setAutoplayTransitionLatched(false)
+    setInviteLinkCopied(false)
     setReplayFinished(false)
 
     try {
@@ -680,19 +884,21 @@ export function App() {
     }
   }
 
-  async function handleJoinRoom() {
-    const normalizedRoomCode = joinRoomCode.trim().toUpperCase()
+  async function handleJoinRoom(roomCodeOverride?: string) {
+    const normalizedRoomCode = (roomCodeOverride ?? joinRoomCode).trim().toUpperCase()
     if (!normalizedRoomCode) {
-      setErrorMessage('Enter a room code first.')
+      setErrorMessage('Enter a room code.')
       return
     }
 
     actionInFlightRef.current = false
     window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
-    setLoadingMessage(`Joining room ${normalizedRoomCode}...`)
+    setLoadingMessage(`Joining ${normalizedRoomCode}...`)
     setPendingActionLabel(null)
     setErrorMessage(null)
     setIsKingPlacementMode(false)
+    setFinishConfirmSide(null)
+    setMenuConfirmOpen(false)
     setSelectedPiece('P')
     setSelectedPiecesBySide({
       white: 'P',
@@ -700,6 +906,7 @@ export function App() {
     })
     setIsCalculatingAutoplay(false)
     setAutoplayTransitionLatched(false)
+    setInviteLinkCopied(false)
     setReplayFinished(false)
 
     try {
@@ -728,10 +935,12 @@ export function App() {
     }
 
     actionInFlightRef.current = false
-    setLoadingMessage('Loading sample setup...')
-    setPendingActionLabel('Loading sample setup...')
+    setLoadingMessage('Loading sample...')
+    setPendingActionLabel('Loading sample...')
     setErrorMessage(null)
     setIsKingPlacementMode(false)
+    setFinishConfirmSide(null)
+    setMenuConfirmOpen(false)
     setSelectedPiece('P')
     setSelectedPiecesBySide({
       white: 'P',
@@ -739,6 +948,7 @@ export function App() {
     })
     setIsCalculatingAutoplay(false)
     setAutoplayTransitionLatched(false)
+    setInviteLinkCopied(false)
     setReplayFinished(false)
 
     try {
@@ -772,7 +982,7 @@ export function App() {
       game[payload.side === 'white' ? 'black' : 'white'].king_square !== null
 
     actionInFlightRef.current = true
-    const pendingLabel = isBotGame ? `${label} Waiting for bot response...` : label
+    const pendingLabel = isBotGame ? `${label} Waiting for bot...` : label
     setPendingActionLabel(pendingLabel)
     setErrorMessage(null)
     setIsCalculatingAutoplay(triggersAutoplay)
@@ -818,20 +1028,45 @@ export function App() {
       return
     }
 
+    const activeStatus = getActivePlayerStatus(game)
+    const currentLegalTargets = getLegalPlacementSquares(
+      game,
+      selectedPiece,
+      isKingPlacementMode,
+      activeStatus.canPlaceKing,
+      true,
+    )
+
     if (isKingPlacementMode) {
+      if (!currentLegalTargets.includes(square)) {
+        setErrorMessage('Choose a highlighted king square.')
+        return
+      }
+
       await submitAction(
         {
           action_type: 'place_king',
           side: game.setup_turn,
           square,
         },
-        `Attempting king placement on ${square}...`,
+        `Placing king on ${square}...`,
       )
       return
     }
 
     if (!selectedPiece) {
-      setErrorMessage('Select a non-king piece first, or use Place king.')
+      setErrorMessage(activeStatus.canPlaceKing ? 'Select King, then choose a highlighted square.' : 'Select an available piece first.')
+      return
+    }
+
+    if (!currentLegalTargets.includes(square)) {
+      setErrorMessage(
+        currentLegalTargets.length > 0
+          ? 'Choose a highlighted legal square.'
+          : activeStatus.canPlaceKing
+            ? 'Select King, then choose a highlighted square.'
+            : 'Select an available piece with legal placement squares first.',
+      )
       return
     }
 
@@ -842,7 +1077,7 @@ export function App() {
         piece_type: selectedPiece,
         square,
       },
-      `Attempting ${selectedPiece} on ${square}...`,
+      `Placing ${selectedPiece} on ${square}...`,
     )
   }
 
@@ -856,7 +1091,7 @@ export function App() {
       setIsKingPlacementMode(true)
     } else {
       setSelectedPiece(piece)
-      if (game.mode === 'local') {
+      if (game.mode !== 'multiplayer') {
         setSelectedPiecesBySide((current) => ({
           ...current,
           [game.setup_turn]: piece,
@@ -868,28 +1103,81 @@ export function App() {
     setErrorMessage(null)
   }
 
-  async function handleFinishSetup() {
-    if (!game || actionInFlightRef.current || !isHumanSetupTurn) {
+  function handleFinishSetupRequest() {
+    if (!game || actionInFlightRef.current || pendingActionLabel || !isHumanSetupTurn) {
       return
     }
 
-    const sideLabel = formatSideLabel(game.setup_turn)
-    const pointsLeft = game[game.setup_turn].points_remaining
-    const confirmed = window.confirm(
-      `Finish setup for ${sideLabel}?\n\nThis locks spending for this side with ${pointsLeft} point${pointsLeft === 1 ? '' : 's'} remaining.`,
-    )
-
-    if (!confirmed) {
+    if (!getActivePlayerStatus(game).canFinishSetup) {
       return
     }
 
+    setFinishConfirmSide(game.setup_turn)
+  }
+
+  async function confirmFinishSetup() {
+    if (!game || !finishConfirmSide || actionInFlightRef.current || !isHumanSetupTurn) {
+      return
+    }
+
+    if (finishConfirmSide !== game.setup_turn || !getActivePlayerStatus(game).canFinishSetup) {
+      setFinishConfirmSide(null)
+      return
+    }
+
+    setFinishConfirmSide(null)
     await submitAction(
       {
         action_type: 'finish_setup',
         side: game.setup_turn,
       },
-      `Finishing setup for ${game.setup_turn}...`,
+      `Locking ${formatSideLabel(game.setup_turn)} setup...`,
     )
+  }
+
+  async function writeTextToClipboard(text: string): Promise<void> {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+
+    const textArea = document.createElement('textarea')
+    textArea.value = text
+    textArea.setAttribute('readonly', '')
+    textArea.style.position = 'fixed'
+    textArea.style.opacity = '0'
+    document.body.append(textArea)
+    textArea.select()
+    const copied = document.execCommand('copy')
+    textArea.remove()
+
+    if (!copied) {
+      throw new Error('Clipboard copy failed.')
+    }
+  }
+
+  async function handleCopyInviteLink() {
+    if (!roomState?.room_code) {
+      return
+    }
+
+    const inviteUrl = new URL(window.location.href)
+    inviteUrl.search = ''
+    inviteUrl.hash = ''
+    inviteUrl.searchParams.set('room', roomState.room_code)
+
+    try {
+      await writeTextToClipboard(inviteUrl.toString())
+      setInviteLinkCopied(true)
+      if (inviteCopiedTimeoutRef.current !== null) {
+        window.clearTimeout(inviteCopiedTimeoutRef.current)
+      }
+      inviteCopiedTimeoutRef.current = window.setTimeout(() => {
+        setInviteLinkCopied(false)
+      }, 1800)
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error))
+    }
   }
 
   function handleDownloadLog() {
@@ -926,7 +1214,6 @@ export function App() {
     return (
       <div className="shell loading-shell">
         <AppHeader
-          primaryPill="New Challenge"
           tone="setup"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -952,23 +1239,23 @@ export function App() {
             <section className="launcher-tutorial">
               <div className="launcher-tutorial-heading">
                 <p className="eyebrow">Quick Start</p>
-                <strong>Three simple steps</strong>
+                  <strong>Three-step battle plan</strong>
               </div>
               <div className="launcher-step-grid">
                 <article className="launcher-step-card">
                   <span>1</span>
                   <strong>Choose a mode</strong>
-                  <p>Play on the same device with a friend, against the bot, or online with a private room code.</p>
+                  <p>Play locally with a friend, play singleplayer vs bot, or create an online multiplayer room.</p>
                 </article>
                 <article className="launcher-step-card">
                   <span>2</span>
-                  <strong>Build your setup</strong>
-                  <p>Spend your points to buy and place the pieces that will fight for you.</p>
+                  <strong>Build your formation</strong>
+                  <p>Spend your points to buy pieces, place them where you want, then place your king last to start the fight.</p>
                 </article>
                 <article className="launcher-step-card">
                   <span>3</span>
-                  <strong>Let the fight begin</strong>
-                  <p>Watch a grandmaster-level chess engine simulate the battle and see which setup wins.</p>
+                  <strong>Watch the battle unfold</strong>
+                  <p>A grandmaster-level chess engine simulates the outcome. May the best setup win.</p>
                 </article>
               </div>
             </section>
@@ -992,7 +1279,7 @@ export function App() {
                       className={`choice-pill ${gameSetupMode === 'bot' ? 'selected' : ''}`}
                       onClick={() => setGameSetupMode('bot')}
                     >
-                      Solo vs Bot
+                      Singleplayer vs Bot
                     </button>
                     <button
                       type="button"
@@ -1073,8 +1360,18 @@ export function App() {
             {errorMessage ? (
               <>
                 <p className="error-message">{errorMessage}</p>
-                <button type="button" className="button ghost" onClick={() => window.location.reload()}>
-                  Retry restore
+                <button
+                  type="button"
+                  className="button ghost"
+                  onClick={() => {
+                    if (isClosedRoomMessage(errorMessage)) {
+                      setErrorMessage(null)
+                      return
+                    }
+                    window.location.reload()
+                  }}
+                >
+                  {isClosedRoomMessage(errorMessage) ? 'Start over' : 'Try reconnecting'}
                 </button>
               </>
             ) : null}
@@ -1085,7 +1382,6 @@ export function App() {
   }
 
   const isSetupActive = game.phase === 'setup'
-  const botTurnActive = isSetupActive && isBotGame && !isHumanSetupTurn
   const multiplayerWaiting = isMultiplayer && roomState?.status === 'waiting'
   const multiplayerSideLabel = roomSession?.playerSide ? roomSession.playerSide[0].toUpperCase() + roomSession.playerSide.slice(1) : null
   const selectedPieceLabel = !isSetupActive
@@ -1096,45 +1392,94 @@ export function App() {
         ? PIECE_LABELS[selectedPiece]
         : 'None'
   const activePlayerStatus = getActivePlayerStatus(game)
-  const bothKingsPlaced = Boolean(game.white.king_square && game.black.king_square)
+  const canActOnSetup =
+    isSetupActive &&
+    pendingActionLabel === null &&
+    isHumanSetupTurn &&
+    (!isMultiplayer || roomState?.status === 'active')
+  const legalTargetSquares = getLegalPlacementSquares(
+    game,
+    selectedPiece,
+    isKingPlacementMode,
+    activePlayerStatus.canPlaceKing,
+    canActOnSetup,
+  )
   const readyForAutoplay = game.autoplay.status === 'pending' || game.phase === 'ready_for_autoplay'
   const autoplayReady = game.phase === 'autoplay' && game.autoplay.status === 'ready' && !!game.autoplay.initial_fen
   const autoplayPhase = game.phase === 'autoplay'
-  const sharedAutoplayPending = game.autoplay.status === 'pending' || game.autoplay.status === 'running'
-  const transitionalCalculatingGuard =
-    bothKingsPlaced &&
-    !autoplayReady &&
-    game.autoplay.status !== 'ready' &&
-    game.autoplay.status !== 'failed'
-  const sharedCalculatingState = readyForAutoplay || sharedAutoplayPending || transitionalCalculatingGuard
+  const sharedCalculatingState = shouldLatchCalculatingOverlay(game)
   const showCalculatingOverlay =
-    autoplayTransitionLatched ||
-    (isMultiplayer ? sharedCalculatingState : isCalculatingAutoplay || sharedCalculatingState)
-  const phaseBadge = readyForAutoplay ? 'Setup Complete' : formatPhaseLabel(game.phase)
+    !isAutoplayTerminal(game) &&
+    (
+      autoplayTransitionLatched ||
+      (isMultiplayer ? sharedCalculatingState : isCalculatingAutoplay || sharedCalculatingState)
+    )
   const headerTone = getHeaderTone(game)
   const headerSecondaryPill = isMultiplayer && roomState
     ? `Room ${roomState.room_code} · ${roomConnectionState}`
     : undefined
+  const roomConnectionTone = getRoomConnectionTone(roomConnectionState)
   const humanSideLabel = isMultiplayer
     ? multiplayerSideLabel
     : game.human_side
       ? game.human_side[0].toUpperCase() + game.human_side.slice(1)
       : null
+  const shopPreviewSide: Side = isMultiplayer && roomSession
+    ? roomSession.playerSide
+    : isBotGame && game.human_side
+      ? game.human_side
+      : game.setup_turn
+  const activeSideLabel = formatSideLabel(game.setup_turn)
+  const selectedSetupPieceLabel = isKingPlacementMode
+    ? 'King'
+    : selectedPiece && legalTargetSquares.length > 0
+      ? PIECE_LABELS[selectedPiece]
+      : null
+  const boardHeading = multiplayerWaiting
+    ? 'Waiting for opponent'
+    : isMultiplayer && !isHumanSetupTurn
+      ? `Opponent placing ${activeSideLabel}`
+      : isBotGame && !isHumanSetupTurn
+        ? `Bot placing ${activeSideLabel}`
+        : selectedSetupPieceLabel
+          ? `${activeSideLabel} placing ${selectedSetupPieceLabel}`
+          : isMultiplayer
+            ? `Your turn: place ${activeSideLabel}`
+            : `${activeSideLabel} to move`
+  const boardEyebrow = multiplayerWaiting
+    ? 'Room Setup'
+    : isMultiplayer && !isHumanSetupTurn
+      ? 'Opponent Turn'
+      : 'Setup Turn'
+  const menuConfirmationModal = menuConfirmOpen ? (
+    <ConfirmationModal
+      eyebrow="Leave game"
+      title="Back to menu?"
+      message={
+        isMultiplayer
+          ? 'This leaves the room and closes the match for both players.'
+          : 'This returns to the menu and clears the current game from this browser session.'
+      }
+      confirmLabel="Back to menu"
+      confirmTone="danger"
+      disabled={pendingActionLabel !== null || actionInFlightRef.current}
+      onCancel={() => setMenuConfirmOpen(false)}
+      onConfirm={() => {
+        void confirmBackToMenu()
+      }}
+    />
+  ) : null
 
   if (autoplayReady) {
-    const outcomeLabel = replayFinished ? formatReplayResult(game.autoplay.result ?? game.result) : 'Pending Result'
-
     return (
       <div className="shell">
         <AppHeader
-          primaryPill={outcomeLabel}
           secondaryPill={headerSecondaryPill}
+          secondaryTone={roomConnectionTone}
           tone={replayFinished ? 'complete' : 'autoplay'}
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
-          onBackToMenu={() => {
-            void backToMenu()
-          }}
+          onBackToMenu={requestBackToMenu}
         />
         <AutoplayViewer
           game={game}
@@ -1148,12 +1493,11 @@ export function App() {
             }
             void startNewGame(game.mode, game.human_side ?? 'white')
           }}
-          onBackToMenu={() => {
-            void backToMenu()
-          }}
+          onBackToMenu={requestBackToMenu}
           outcomeKnown={replayFinished}
           onOutcomeReveal={() => setReplayFinished(true)}
         />
+        {menuConfirmationModal}
       </div>
     )
   }
@@ -1162,14 +1506,12 @@ export function App() {
     return (
       <div className="shell">
         <AppHeader
-          primaryPill="Calculating"
           secondaryPill={headerSecondaryPill}
+          secondaryTone={roomConnectionTone}
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
-          onBackToMenu={() => {
-            void backToMenu()
-          }}
+          onBackToMenu={requestBackToMenu}
         />
 
         <main className="layout">
@@ -1201,9 +1543,9 @@ export function App() {
                         <span />
                       </div>
                       <div>
-                        <p className="eyebrow">Engine is preparing the game</p>
+                        <p className="eyebrow">Engine is preparing</p>
                         <h3>Calculating autoplay...</h3>
-                        <p>The starting position is locked in. Stockfish is generating the full engine-vs-engine replay from this setup now.</p>
+                        <p>The setup is locked. Stockfish is generating the shared replay.</p>
                       </div>
                     </section>
                   </div>
@@ -1223,7 +1565,7 @@ export function App() {
 
               <div className="status-line">
                 <span className="live-dot tone-autoplay on" />
-                <strong>Generating autoplay replay</strong>
+                <strong>Generating shared replay</strong>
                 <span className="status-chip tone-autoplay">Working</span>
               </div>
 
@@ -1251,6 +1593,7 @@ export function App() {
             </section>
           </aside>
         </main>
+        {menuConfirmationModal}
       </div>
     )
   }
@@ -1265,20 +1608,18 @@ export function App() {
     const autoplayMessage =
       game.autoplay.error ??
       (game.autoplay.status === 'running'
-        ? 'The backend is generating the engine-vs-engine replay from the finished setup.'
-        : 'The finished setup is locked in, but replay data is not ready yet.')
+        ? 'Stockfish is generating the replay from the finished setup.'
+        : 'The setup is locked. Replay data is not ready yet.')
 
     return (
       <div className="shell">
         <AppHeader
-          primaryPill={game.autoplay.status}
           secondaryPill={headerSecondaryPill}
+          secondaryTone={roomConnectionTone}
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
-          onBackToMenu={() => {
-            void backToMenu()
-          }}
+          onBackToMenu={requestBackToMenu}
         />
 
         <main className="layout">
@@ -1322,9 +1663,7 @@ export function App() {
                         <button
                           type="button"
                           className="button ghost"
-                          onClick={() => {
-                            void backToMenu()
-                          }}
+                          onClick={requestBackToMenu}
                         >
                           Back to menu
                         </button>
@@ -1336,6 +1675,7 @@ export function App() {
             </div>
           </section>
         </main>
+        {menuConfirmationModal}
       </div>
     )
   }
@@ -1343,14 +1683,12 @@ export function App() {
   return (
     <div className="shell">
       <AppHeader
-        primaryPill={phaseBadge}
         secondaryPill={headerSecondaryPill}
+        secondaryTone={roomConnectionTone}
         tone={headerTone}
         theme={theme}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
-        onBackToMenu={() => {
-          void backToMenu()
-        }}
+        onBackToMenu={requestBackToMenu}
       />
 
       <main className="layout">
@@ -1358,8 +1696,8 @@ export function App() {
           <div className="board-stage">
             <div className="stage-heading">
               <div>
-                <p className="eyebrow">Arena</p>
-                <h2>Formation Board</h2>
+                <p className="eyebrow">{boardEyebrow}</p>
+                <h2>{boardHeading}</h2>
               </div>
             </div>
 
@@ -1368,7 +1706,7 @@ export function App() {
                 <div>
                   <p className="eyebrow">Next Stage</p>
                   <h3>Ready for autoplay</h3>
-                  <p>The formation phase is complete and both kings are placed. The backend should generate an autoplay replay from this position next.</p>
+                  <p>Both kings are placed. Stockfish will resolve this position into a replay.</p>
                 </div>
               </section>
             ) : null}
@@ -1376,9 +1714,10 @@ export function App() {
             <section className="panel board-panel premium-card">
               <Board
                 activeSide={game.setup_turn}
-                interactive={isSetupActive && isHumanSetupTurn && pendingActionLabel === null}
+                interactive={canActOnSetup}
+                legalTargetSquares={legalTargetSquares}
                 selectedSquare={null}
-                selectedModeLabel={multiplayerWaiting ? 'Awaiting opponent' : `${formatSideLabel(game.setup_turn)} to move`}
+                selectedModeLabel={boardHeading}
                 squares={boardSquares}
                 onSquareClick={(square) => {
                   void handleSquareClick(square)
@@ -1404,12 +1743,17 @@ export function App() {
           canPlaceKing={activePlayerStatus.canPlaceKing}
           finishSetupReason={activePlayerStatus.finishSetupReason}
           kingPlacementReason={activePlayerStatus.kingPlacementReason}
+          sharedRequirementReason={activePlayerStatus.sharedRequirementReason}
           isBotGame={isBotGame}
           humanSideLabel={humanSideLabel}
+          shopPreviewSide={shopPreviewSide}
           isHumanSetupTurn={isHumanSetupTurn}
           onSelectPiece={handleSelectPiece}
           onFinishSetup={() => {
-            void handleFinishSetup()
+            handleFinishSetupRequest()
+          }}
+          onCopyInviteLink={() => {
+            void handleCopyInviteLink()
           }}
           onRefresh={() => {
             void refreshGame()
@@ -1418,9 +1762,25 @@ export function App() {
             void loadSampleGame()
           }}
           onDownloadLog={handleDownloadLog}
+          inviteCopied={inviteLinkCopied}
           statusTone={headerTone}
         />
       </main>
+
+      {finishConfirmSide ? (
+        <ConfirmationModal
+          eyebrow="Confirm setup"
+          title={`Finish setup for ${formatSideLabel(finishConfirmSide)}?`}
+          message={`This locks ${formatSideLabel(finishConfirmSide).toLowerCase()}'s budget with ${game[finishConfirmSide].points_remaining} point${game[finishConfirmSide].points_remaining === 1 ? '' : 's'} left. King placement comes next.`}
+          confirmLabel="Finish setup"
+          disabled={pendingActionLabel !== null || actionInFlightRef.current}
+          onCancel={() => setFinishConfirmSide(null)}
+          onConfirm={() => {
+            void confirmFinishSetup()
+          }}
+        />
+      ) : null}
+      {menuConfirmationModal}
     </div>
   )
 }
