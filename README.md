@@ -50,7 +50,7 @@ The Vite client intentionally calls the backend on port `8000` during local dev.
 Use LAN mode for same-network phone/laptop testing. It builds the frontend and serves `client/dist` from FastAPI on one origin:
 
 ```bash
-export PUBLIC_HOST=192.168.1.42
+export PUBLIC_HOST=YOUR_LAN_IP
 bash ./run-lan.sh
 ```
 
