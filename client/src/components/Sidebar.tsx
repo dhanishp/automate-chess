@@ -35,7 +35,7 @@ interface SidebarProps {
   onFinishSetup: () => void
   onRefresh: () => void
   onLoadSample: () => void
-  onBackToMenu: () => void
+  onDownloadLog: () => void
   statusTone: 'setup' | 'autoplay' | 'complete'
 }
 
@@ -155,7 +155,7 @@ export function Sidebar({
   onFinishSetup,
   onRefresh,
   onLoadSample,
-  onBackToMenu,
+  onDownloadLog,
   statusTone,
 }: SidebarProps) {
   const activePlayer = game[game.setup_turn]
@@ -200,10 +200,6 @@ export function Sidebar({
         </div>
 
         <div className="status-metrics">
-          <div className="metric-card emphasis">
-            <span>Selected</span>
-            <strong>{selectedPieceLabel}</strong>
-          </div>
           {(isBotGame || isMultiplayer) ? (
             <div className="metric-card">
               <span>You</span>
@@ -228,18 +224,6 @@ export function Sidebar({
               <strong>{roomCode ?? '—'}</strong>
             </div>
           ) : null}
-          <div className="metric-card">
-            <span>White points</span>
-            <strong>{game.white.points_remaining}</strong>
-          </div>
-          <div className="metric-card">
-            <span>Black points</span>
-            <strong>{game.black.points_remaining}</strong>
-          </div>
-          <div className="metric-card">
-            <span>Game ID</span>
-            <strong>{game.game_id}</strong>
-          </div>
         </div>
       </section>
 
@@ -257,8 +241,22 @@ export function Sidebar({
               ? `Your opponent is acting for ${activeSideLabel.toLowerCase()}. The board will unlock when your turn starts.`
             : isBotGame && !isHumanSetupTurn
             ? `The bot is acting for ${activeSideLabel.toLowerCase()}. Piece selection will unlock again when your next setup turn starts.`
-            : `Select a piece, then click a square on the board. Shop previews currently show the ${activeSideLabel.toLowerCase()} side.`}
+            : `Select a piece, then click a legal square. The shop previews currently show the ${activeSideLabel.toLowerCase()} side.`}
         </p>
+        <div className="shop-points-strip">
+          <div className={`shop-points-card ${game.setup_turn === 'white' ? 'active' : ''}`}>
+            <span>White</span>
+            <strong>{game.white.points_remaining}</strong>
+          </div>
+          <div className={`shop-points-card ${game.setup_turn === 'black' ? 'active' : ''}`}>
+            <span>Black</span>
+            <strong>{game.black.points_remaining}</strong>
+          </div>
+          <div className="shop-points-card emphasis">
+            <span>Selected</span>
+            <strong>{selectedPieceLabel}</strong>
+          </div>
+        </div>
         <div className="shop-preview-badge">
           <span className="shop-preview-dot" />
           Previewing {activeSideLabel}
@@ -297,6 +295,51 @@ export function Sidebar({
             )
           })}
         </div>
+      </section>
+
+      <section className="panel premium-card">
+        <div className="panel-heading compact">
+          <div>
+            <p className="eyebrow">Primary Actions</p>
+            <h2>{isSetupActive ? 'Commit Move' : 'Next Stage'}</h2>
+          </div>
+        </div>
+
+        {isSetupActive ? (
+          <>
+            <button type="button" className="button primary action-button" onClick={onFinishSetup} disabled={!canInteract || !canFinishSetup}>
+              Finish setup for {formatSide(game.setup_turn)}
+            </button>
+            {canFinishSetup ? (
+              <p className="hint-message compact-hint">Finishing setup locks spending for this side. You will only place the king after confirming.</p>
+            ) : null}
+            <button
+              type="button"
+              className="button ghost secondary-utility-button"
+              onClick={onLoadSample}
+              disabled={!canInteract || isMultiplayer}
+            >
+              Load sample setup
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="hint-message">Setup is complete. Autoplay state is read-only from here.</p>
+          </>
+        )}
+
+        {isMultiplayer && isSetupActive && roomStatus === 'waiting' && !pendingActionLabel ? (
+          <p className="status-message">Waiting for Black to join this room. Share the room code to begin live setup.</p>
+        ) : null}
+        {isMultiplayer && isSetupActive && roomStatus === 'active' && !isHumanSetupTurn && !pendingActionLabel ? (
+          <p className="status-message">Your opponent is taking their setup turn. Live updates will appear automatically.</p>
+        ) : null}
+        {isBotGame && isSetupActive && !isHumanSetupTurn && !pendingActionLabel ? (
+          <p className="status-message">Easy bot is taking its setup turn. Human controls will unlock automatically after the bot responds.</p>
+        ) : null}
+        {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
+        {blockingMessage ? <p className="warning-message">{blockingMessage}</p> : null}
+        {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
       </section>
 
       <section className="panel premium-card">
@@ -357,65 +400,15 @@ export function Sidebar({
         )}
       </section>
 
-      <section className="panel premium-card">
-        <div className="panel-heading compact">
-          <div>
-            <p className="eyebrow">Primary Actions</p>
-            <h2>{isSetupActive ? 'Commit Move' : 'Next Stage'}</h2>
-          </div>
-        </div>
-
-        {isSetupActive ? (
-          <>
-            <button type="button" className="button primary action-button" onClick={onFinishSetup} disabled={!canInteract || !canFinishSetup}>
-              Finish setup for {formatSide(game.setup_turn)}
-            </button>
-            <button
-              type="button"
-              className="button ghost secondary-utility-button"
-              onClick={onLoadSample}
-              disabled={!canInteract || isMultiplayer}
-            >
-              Load sample setup
-            </button>
-            <button
-              type="button"
-              className="button ghost secondary-utility-button"
-              onClick={onBackToMenu}
-              disabled={pendingActionLabel !== null}
-            >
-              Back to menu
-            </button>
-          </>
-        ) : (
-          <>
-            <p className="hint-message">Setup is complete. Autoplay has not been implemented yet, so this screen is intentionally read-only now.</p>
-            <button type="button" className="button ghost secondary-utility-button" onClick={onBackToMenu}>
-              Back to menu
-            </button>
-          </>
-        )}
-
-        {isMultiplayer && isSetupActive && roomStatus === 'waiting' && !pendingActionLabel ? (
-          <p className="status-message">Waiting for Black to join this room. Share the room code to begin live setup.</p>
-        ) : null}
-        {isMultiplayer && isSetupActive && roomStatus === 'active' && !isHumanSetupTurn && !pendingActionLabel ? (
-          <p className="status-message">Your opponent is taking their setup turn. Live updates will appear automatically.</p>
-        ) : null}
-        {isBotGame && isSetupActive && !isHumanSetupTurn && !pendingActionLabel ? (
-          <p className="status-message">Easy bot is taking its setup turn. Human controls will unlock automatically after the bot responds.</p>
-        ) : null}
-        {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
-        {blockingMessage ? <p className="warning-message">{blockingMessage}</p> : null}
-        {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
-      </section>
-
       <section className="panel premium-card event-card">
         <div className="panel-heading compact">
           <div>
             <p className="eyebrow">Event Log</p>
             <h2>Recent Actions</h2>
           </div>
+          <button type="button" className="button ghost small" onClick={onDownloadLog}>
+            Download
+          </button>
         </div>
         <ul className="event-list">
           {game.event_log.slice(-8).reverse().map((entry, index) => (

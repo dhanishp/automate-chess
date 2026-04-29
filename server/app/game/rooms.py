@@ -4,8 +4,10 @@ import random
 from typing import Dict
 from uuid import uuid4
 
-from app.game.engine import EngineProvider, LocalStockfishProvider
+from app.game.engine import EngineError, EngineProvider, LocalStockfishProvider
 from app.game.models import (
+    AutoplayState,
+    AutoplayStatus,
     CreateRoomRequest,
     GameMode,
     GameState,
@@ -13,8 +15,10 @@ from app.game.models import (
     LeaveRoomRequest,
     Phase,
     RoomActionRequest,
+    RoomPlayerSnapshot,
     RoomPlayerState,
     RoomResponse,
+    RoomSnapshot,
     RoomState,
     RoomStatus,
     Side,
@@ -37,6 +41,10 @@ class RoomAccessError(PermissionError):
     pass
 
 
+class RoomNotReadyError(ValueError):
+    pass
+
+
 class RoomService:
     def __init__(self, engine_provider: EngineProvider | None = None, rng: random.Random | None = None) -> None:
         self._rooms: Dict[str, RoomState] = {}
@@ -56,8 +64,9 @@ class RoomService:
             white_player=RoomPlayerState(side=Side.WHITE, player_token=player_token, connected=False),
             black_player=None,
         )
+        self._touch_room(room)
         self._rooms[room_code] = room
-        return RoomResponse(message="Room created.", room=room, player_token=player_token, player_side=Side.WHITE)
+        return self.room_response("Room created.", room, player_token, Side.WHITE)
 
     def join_room(self, request: JoinRoomRequest) -> RoomResponse:
         room = self._get_room(request.room_code)
@@ -68,50 +77,111 @@ class RoomService:
         room.black_player = RoomPlayerState(side=Side.BLACK, player_token=player_token, connected=False)
         room.game.event_log.append(f"Black joined room {room.room_code}")
         self._update_room_status(room)
-        return RoomResponse(message="Joined room.", room=room, player_token=player_token, player_side=Side.BLACK)
+        self._touch_room(room)
+        return self.room_response("Joined room.", room, player_token, Side.BLACK)
 
     def get_room(self, room_code: str, player_token: str) -> RoomResponse:
         room = self._get_room(room_code)
         player_side = self._side_for_token(room, player_token)
         self._normalize_setup_turn(room.game)
         self._update_room_status(room)
-        return RoomResponse(room=room, player_token=player_token, player_side=player_side)
+        return self.room_response(None, room, player_token, player_side)
 
     def leave_room(self, room_code: str, request: LeaveRoomRequest) -> tuple[RoomState | None, Side]:
-        room = self._get_room(room_code)
+        normalized_room_code = self._normalize_room_code(room_code)
+        room = self._get_room(normalized_room_code)
         side = self._side_for_token(room, request.player_token)
-
-        if side is Side.WHITE:
-            del self._rooms[room_code]
-            return None, side
-
-        room.black_player = None
-        room.game.event_log.append("Black left the room.")
-        self._update_room_status(room)
-        return room, side
+        del self._rooms[normalized_room_code]
+        return None, side
 
     def mark_connected(self, room_code: str, player_token: str, connected: bool) -> RoomState:
         room = self._get_room(room_code)
         side = self._side_for_token(room, player_token)
         player = room.white_player if side is Side.WHITE else room.black_player
         assert player is not None
+        if player.connected == connected:
+            return room
         player.connected = connected
         room.game.event_log.append(f"{side.value} {'connected' if connected else 'disconnected'}")
         self._update_room_status(room)
+        self._touch_room(room)
         return room
 
-    def apply_action(self, room_code: str, request: RoomActionRequest) -> RoomState:
+    def apply_action(self, room_code: str, request: RoomActionRequest, finalize_autoplay: bool = True) -> RoomState:
         room = self._get_room(room_code)
         side = self._side_for_token(room, request.player_token)
         if request.action.side is not side:
             raise RoomAccessError("Players may only submit actions for their assigned side.")
+        if room.black_player is None:
+            raise RoomNotReadyError("Room is waiting for an opponent. Setup actions unlock after both players join.")
 
         updated = self._rules_engine.apply_action(room.game.model_copy(deep=True), request.action)
         updated = self._normalize_setup_turn(updated)
-        updated = self._finalize_post_setup(updated)
+        if updated.phase is Phase.READY_FOR_AUTOPLAY and updated.autoplay.status is AutoplayStatus.NOT_READY:
+            updated.autoplay = updated.autoplay.model_copy(update={"status": AutoplayStatus.PENDING, "error": None})
+        if finalize_autoplay:
+            updated = self._finalize_post_setup_or_failure(updated)
         room.game = updated
         self._update_room_status(room)
+        self._touch_room(room)
         return room
+
+    def begin_autoplay(self, room_code: str) -> RoomState:
+        room = self._get_room(room_code)
+        if room.game.phase is Phase.READY_FOR_AUTOPLAY:
+            room.game.autoplay = AutoplayState(
+                status=AutoplayStatus.RUNNING,
+                error=None,
+            )
+            room.game.phase = Phase.AUTOPLAY
+            room.game.event_log.append("Autoplay replay generation started.")
+            self._update_room_status(room)
+            self._touch_room(room)
+        return room
+
+    def finalize_autoplay(self, room_code: str) -> RoomState:
+        room = self._get_room(room_code)
+        room.game = self._finalize_post_setup_or_failure(room.game)
+        self._update_room_status(room)
+        self._touch_room(room)
+        return room
+
+    def public_room(self, room: RoomState) -> RoomSnapshot:
+        return RoomSnapshot(
+            room_code=room.room_code,
+            version=room.version,
+            status=room.status,
+            game=room.game,
+            white_player=RoomPlayerSnapshot(
+                side=room.white_player.side,
+                connected=room.white_player.connected,
+            ),
+            black_player=(
+                RoomPlayerSnapshot(
+                    side=room.black_player.side,
+                    connected=room.black_player.connected,
+                )
+                if room.black_player
+                else None
+            ),
+        )
+
+    def room_response(
+        self,
+        message: str | None,
+        room: RoomState,
+        player_token: str,
+        player_side: Side,
+    ) -> RoomResponse:
+        return RoomResponse(
+            message=message,
+            room=self.public_room(room),
+            player_token=player_token,
+            player_side=player_side,
+        )
+
+    def _normalize_room_code(self, room_code: str) -> str:
+        return room_code.strip().upper()
 
     def _generate_room_code(self) -> str:
         while True:
@@ -120,7 +190,7 @@ class RoomService:
                 return code
 
     def _get_room(self, room_code: str) -> RoomState:
-        normalized = room_code.strip().upper()
+        normalized = self._normalize_room_code(room_code)
         try:
             return self._rooms[normalized]
         except KeyError as exc:
@@ -143,12 +213,32 @@ class RoomService:
         room.status = RoomStatus.ACTIVE
 
     def _finalize_post_setup(self, game: GameState) -> GameState:
-        if game.phase == Phase.READY_FOR_AUTOPLAY:
+        if game.phase in {Phase.READY_FOR_AUTOPLAY, Phase.AUTOPLAY} and game.autoplay.status in {
+            AutoplayStatus.NOT_READY,
+            AutoplayStatus.PENDING,
+            AutoplayStatus.RUNNING,
+        }:
             game.autoplay = self._engine_provider.generate_autoplay(game)
             game.phase = Phase.AUTOPLAY
             game.result = game.autoplay.result
             game.event_log.append("Autoplay replay generated from the finished setup.")
         return game
+
+    def _finalize_post_setup_or_failure(self, game: GameState) -> GameState:
+        try:
+            return self._finalize_post_setup(game)
+        except EngineError as exc:
+            return self._mark_autoplay_failed(game, str(exc))
+
+    def _mark_autoplay_failed(self, game: GameState, error: str) -> GameState:
+        game.phase = Phase.AUTOPLAY
+        game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=error)
+        game.result = None
+        game.event_log.append(f"Autoplay replay generation failed: {error}")
+        return game
+
+    def _touch_room(self, room: RoomState) -> None:
+        room.version += 1
 
     def _normalize_setup_turn(self, game: GameState) -> GameState:
         if game.phase is not Phase.SETUP:

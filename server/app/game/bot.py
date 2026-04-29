@@ -67,6 +67,7 @@ class EasySetupBot:
         player = game.player(side)
         occupied = occupied_squares(game)
         candidates: list[WeightedAction] = []
+        placement_candidates: list[WeightedAction] = []
         mandatory_pawns_remaining = max(game.rules.mandatory_pawns - player.mandatory_pawn_count, 0)
 
         if not player.finished_spending:
@@ -86,14 +87,16 @@ class EasySetupBot:
                         square=square,
                     )
                     if self._is_legal(game, action):
-                        candidates.append(
+                        placement_candidates.append(
                             WeightedAction(
                                 action=action,
                                 weight=self._placement_weight(game, side, piece_type, square, mandatory_pawns_remaining),
                             )
                         )
 
-            if player.mandatory_pawn_count >= game.rules.mandatory_pawns:
+            candidates.extend(placement_candidates)
+
+            if player.mandatory_pawn_count >= game.rules.mandatory_pawns and not placement_candidates:
                 finish_action = ActionRequest(action_type=ActionType.FINISH_SETUP, side=side)
                 if self._is_legal(game, finish_action):
                     candidates.append(

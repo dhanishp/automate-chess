@@ -37,6 +37,7 @@ class HumanSideChoice(str, Enum):
 
 class AutoplayStatus(str, Enum):
     NOT_READY = "not_ready"
+    PENDING = "pending"
     RUNNING = "running"
     READY = "ready"
     FAILED = "failed"
@@ -179,10 +180,25 @@ class RoomPlayerState(BaseModel):
 
 class RoomState(BaseModel):
     room_code: str
+    version: int = 0
     status: RoomStatus
     game: GameState
     white_player: RoomPlayerState
     black_player: RoomPlayerState | None = None
+
+
+class RoomPlayerSnapshot(BaseModel):
+    side: Side
+    connected: bool = False
+
+
+class RoomSnapshot(BaseModel):
+    room_code: str
+    version: int = 0
+    status: RoomStatus
+    game: GameState
+    white_player: RoomPlayerSnapshot
+    black_player: RoomPlayerSnapshot | None = None
 
 
 class CreateRoomRequest(BaseModel):
@@ -206,14 +222,14 @@ class RoomActionRequest(BaseModel):
 class RoomResponse(BaseModel):
     ok: bool = True
     message: str | None = None
-    room: RoomState
+    room: RoomSnapshot
     player_token: str
     player_side: Side
 
 
 class RoomEvent(BaseModel):
     type: Literal["snapshot", "room_closed"]
-    room: RoomState | None = None
+    room: RoomSnapshot | None = None
     room_code: str | None = None
     message: str | None = None
 

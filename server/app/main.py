@@ -1,7 +1,10 @@
 from collections import defaultdict
+import os
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.game.bot import BotMoveError
 from app.game.engine import EngineError, EngineUnavailableError
@@ -13,17 +16,21 @@ from app.game.models import (
     CreateSoloGameRequest,
     JoinRoomRequest,
     LeaveRoomRequest,
+    Phase,
     RoomActionRequest,
     RoomEvent,
     RoomResponse,
+    RoomSnapshot,
+    RoomState,
 )
 from app.game.presets import PresetNotFoundError
-from app.game.rooms import RoomAccessError, RoomJoinError, RoomNotFoundError, RoomService
+from app.game.rooms import RoomAccessError, RoomJoinError, RoomNotFoundError, RoomNotReadyError, RoomService
 from app.game.rules import RuleViolation
 from app.game.service import service
 
 app = FastAPI(title="Automate Chess API", version="0.1.0")
 room_service = RoomService()
+CLIENT_DIST_DIR = Path(__file__).resolve().parents[2] / "client" / "dist"
 
 
 class RoomHub:
@@ -41,9 +48,10 @@ class RoomHub:
         if not connections and room_code in self._connections:
             del self._connections[room_code]
 
-    async def broadcast_snapshot(self, room) -> None:  # noqa: ANN001
-        event = RoomEvent(type="snapshot", room=room)
-        for websocket in list(self._connections.get(room.room_code, [])):
+    async def broadcast_snapshot(self, room: RoomState | RoomSnapshot) -> None:
+        snapshot = room_service.public_room(room) if isinstance(room, RoomState) else room
+        event = RoomEvent(type="snapshot", room=snapshot)
+        for websocket in list(self._connections.get(snapshot.room_code, [])):
             await websocket.send_json(event.model_dump(mode="json"))
 
     async def broadcast_closed(self, room_code: str, message: str) -> None:
@@ -61,6 +69,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ],
+    allow_origin_regex=r"http://(?:localhost|127\.0\.0\.1|(?:\d{1,3}\.){3}\d{1,3}):5173",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -144,20 +153,30 @@ async def get_room(room_code: str, player_token: str) -> RoomResponse:
 @app.post("/rooms/{room_code}/actions", response_model=RoomResponse)
 async def apply_room_action(room_code: str, request: RoomActionRequest) -> RoomResponse:
     try:
-        room = room_service.apply_action(room_code, request)
+        room = room_service.apply_action(room_code, request, finalize_autoplay=False)
         player_side = room_service.get_room(room_code, request.player_token).player_side
     except RoomNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RoomAccessError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RoomNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuleViolation as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EngineError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     await room_hub.broadcast_snapshot(room)
-    return RoomResponse(message="Room action applied.", room=room, player_token=request.player_token, player_side=player_side)
+
+    if room.game.phase is Phase.READY_FOR_AUTOPLAY:
+        room = room_service.begin_autoplay(room_code)
+        await room_hub.broadcast_snapshot(room)
+        room = room_service.finalize_autoplay(room_code)
+
+    await room_hub.broadcast_snapshot(room)
+    return room_service.room_response("Room action applied.", room, request.player_token, player_side)
 
 
 @app.post("/rooms/{room_code}/leave")
@@ -199,3 +218,7 @@ async def room_websocket(websocket: WebSocket, room_code: str, player_token: str
         except (RoomNotFoundError, RoomAccessError):
             return
         await room_hub.broadcast_snapshot(room)
+
+
+if os.getenv("SERVE_CLIENT_DIST") == "1" and CLIENT_DIST_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=CLIENT_DIST_DIR, html=True), name="client")

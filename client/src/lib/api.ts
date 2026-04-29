@@ -1,4 +1,20 @@
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000'
+function getDefaultApiBaseUrl(): string {
+  if (typeof window === 'undefined') {
+    return 'http://127.0.0.1:8000'
+  }
+
+  if (window.location.port && window.location.port !== '5173') {
+    return window.location.origin
+  }
+
+  if (!window.location.port) {
+    return window.location.origin
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+  const host = window.location.hostname || '127.0.0.1'
+  return `${protocol}//${host}:8000`
+}
 
 export type Side = 'white' | 'black'
 export type GameMode = 'local' | 'bot' | 'multiplayer'
@@ -6,7 +22,7 @@ export type HumanSideChoice = 'white' | 'black' | 'random'
 export type Phase = 'setup' | 'ready_for_autoplay' | 'autoplay' | 'results'
 export type ActionType = 'place_piece' | 'finish_setup' | 'place_king'
 export type PieceType = 'P' | 'N' | 'B' | 'R' | 'Q' | 'K'
-export type AutoplayStatus = 'not_ready' | 'running' | 'ready' | 'failed'
+export type AutoplayStatus = 'not_ready' | 'pending' | 'running' | 'ready' | 'failed'
 export type RoomStatus = 'waiting' | 'active' | 'complete'
 
 export interface PlacedPiece {
@@ -73,12 +89,12 @@ export interface ApiResponse {
 
 export interface RoomPlayerState {
   side: Side
-  player_token: string
   connected: boolean
 }
 
 export interface RoomState {
   room_code: string
+  version: number
   status: RoomStatus
   game: GameState
   white_player: RoomPlayerState
@@ -148,7 +164,7 @@ export class ApiError extends Error {
   }
 }
 
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? DEFAULT_API_BASE_URL
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? getDefaultApiBaseUrl()
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)

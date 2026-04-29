@@ -10,6 +10,13 @@ VENV_DIR="$SERVER_DIR/.venv"
 PYTHON_BIN="$VENV_DIR/bin/python"
 BACKEND_URL="http://127.0.0.1:8000"
 FRONTEND_URL="http://127.0.0.1:5173"
+DEV_HOST="${DEV_HOST:-0.0.0.0}"
+PUBLIC_HOST="${PUBLIC_HOST:-127.0.0.1}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+BACKEND_URL="http://${PUBLIC_HOST}:${BACKEND_PORT}"
+FRONTEND_URL="http://${PUBLIC_HOST}:${FRONTEND_PORT}"
+export DEV_HOST BACKEND_PORT FRONTEND_PORT
 BACKEND_PID=""
 FRONTEND_PID=""
 
@@ -101,14 +108,14 @@ fi
 log "backend" "starting in $SERVER_DIR"
 (
   cd "$SERVER_DIR"
-  exec "$PYTHON_BIN" -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+  exec "$PYTHON_BIN" -m uvicorn app.main:app --reload --host "$DEV_HOST" --port "$BACKEND_PORT"
 ) &
 BACKEND_PID=$!
 
 log "frontend" "starting in $CLIENT_DIR"
 (
   cd "$CLIENT_DIR"
-  exec npm run dev -- --host 127.0.0.1 --port 5173
+  exec npm run dev -- --host 0.0.0.0 --port 5173
 ) &
 FRONTEND_PID=$!
 

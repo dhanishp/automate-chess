@@ -27,7 +27,9 @@ Not implemented yet:
 
 ## Run locally
 
-Use any of these from the project root:
+### Dev mode
+
+Use this for normal local development with Vite and HMR:
 
 ```bash
 bash ./run-dev.sh
@@ -36,7 +38,34 @@ make dev
 
 On macOS, you can also double-click `Launch Automate Chess.command`.
 
-The launcher will create `server/.venv`, install backend dependencies, install frontend dependencies when needed, start the API on `http://127.0.0.1:8000`, and start the Vite client on `http://127.0.0.1:5173`.
+This starts:
+- FastAPI on `http://127.0.0.1:8000`
+- Vite on `http://127.0.0.1:5173`
+
+### LAN mode
+
+Use this for reliable same-network play from phones or other devices. It builds the frontend and serves it from FastAPI on the same origin:
+
+```bash
+export PUBLIC_HOST=192.168.1.42
+bash ./run-lan.sh
+```
+
+This starts FastAPI on `0.0.0.0:8000`, serves the built frontend from `client/dist`, and makes the app available at:
+
+```text
+http://YOUR_LAN_IP:8000
+```
+
+Helpful commands for finding your local IP:
+- macOS: `ipconfig getifaddr en0`
+- Linux: `hostname -I`
+
+From another device on the same network, open:
+
+```text
+http://YOUR_LAN_IP:8000
+```
 
 For autoplay generation, install Stockfish locally and set `STOCKFISH_PATH` if it is not available in a common path such as `/opt/homebrew/bin/stockfish` on macOS:
 

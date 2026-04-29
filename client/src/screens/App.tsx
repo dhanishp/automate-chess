@@ -10,7 +10,6 @@ import {
   createRoom,
   createSampleGame,
   createSoloGame,
-  getApiBaseUrl,
   getGame,
   getRoom,
   getWebSocketUrl,
@@ -21,7 +20,6 @@ import {
   type HumanSideChoice,
   type PieceType,
   type RoomEvent,
-  type RoomResponse,
   type RoomState,
   type RoomStatus,
   type Side,
@@ -181,6 +179,10 @@ function formatModeLabel(mode: GameMode): string {
   return 'Solo Sandbox'
 }
 
+function formatSideLabel(side: Side): string {
+  return side[0].toUpperCase() + side.slice(1)
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms)
@@ -255,14 +257,31 @@ export function App() {
   const [roomSession, setRoomSession] = useState<RoomSession | null>(null)
   const [roomConnectionState, setRoomConnectionState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected')
   const [selectedPiece, setSelectedPiece] = useState<PieceType | null>('P')
+  const [selectedPiecesBySide, setSelectedPiecesBySide] = useState<Record<Side, PieceType | null>>({
+    white: 'P',
+    black: 'P',
+  })
   const [isKingPlacementMode, setIsKingPlacementMode] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [loadingMessage, setLoadingMessage] = useState('Loading saved game...')
   const [pendingActionLabel, setPendingActionLabel] = useState<string | null>(null)
   const [isCalculatingAutoplay, setIsCalculatingAutoplay] = useState(false)
+  const [autoplayTransitionLatched, setAutoplayTransitionLatched] = useState(false)
   const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
   const [replayFinished, setReplayFinished] = useState(false)
   const actionInFlightRef = useRef(false)
+  const roomStateRef = useRef<RoomState | null>(null)
+  const roomVersionRef = useRef<number>(0)
+  const syncRoomStateRef = useRef<(() => Promise<boolean>) | null>(null)
+  const reconnectTimeoutRef = useRef<number | null>(null)
+  const heartbeatIntervalRef = useRef<number | null>(null)
+  const firstSnapshotTimeoutRef = useRef<number | null>(null)
+  const pollingIntervalRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    roomStateRef.current = roomState
+    roomVersionRef.current = roomState?.version ?? 0
+  }, [roomState])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -314,6 +333,15 @@ export function App() {
   }, [game])
 
   useEffect(() => {
+    if (!game || game.phase !== 'setup' || game.mode !== 'local') {
+      return
+    }
+
+    setIsKingPlacementMode(false)
+    setSelectedPiece(selectedPiecesBySide[game.setup_turn] ?? 'P')
+  }, [game?.game_id, game?.mode, game?.phase, game?.setup_turn, selectedPiecesBySide, game])
+
+  useEffect(() => {
     if (!game || game.phase !== 'setup') {
       return
     }
@@ -324,47 +352,215 @@ export function App() {
   }, [game, isKingPlacementMode])
 
   useEffect(() => {
-    if (!roomSession) {
-      setRoomConnectionState('disconnected')
+    if (!game) {
+      setAutoplayTransitionLatched(false)
       return
     }
 
-    const url = new URL(
-      getWebSocketUrl(`/rooms/${roomSession.roomCode}/ws`),
-    )
-    url.searchParams.set('player_token', roomSession.playerToken)
+    const bothKingsPlaced = Boolean(game.white.king_square && game.black.king_square)
+    const shouldLatch =
+      bothKingsPlaced &&
+      game.autoplay.status !== 'ready' &&
+      game.autoplay.status !== 'failed'
 
-    setRoomConnectionState('connecting')
-    const socket = new WebSocket(url.toString())
+    setAutoplayTransitionLatched(shouldLatch)
+  }, [game])
 
-    socket.onopen = () => {
-      setRoomConnectionState('connected')
+  function resetToLauncher(message: string | null = null) {
+    actionInFlightRef.current = false
+    window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+    setStoredRoomSession(null)
+    setGame(null)
+    setRoomState(null)
+    setRoomSession(null)
+    setRoomConnectionState('disconnected')
+    setGameSetupMode('local')
+    setHumanSideChoice('white')
+    setJoinRoomCode('')
+    setSelectedPiece('P')
+    setSelectedPiecesBySide({
+      white: 'P',
+      black: 'P',
+    })
+    setIsKingPlacementMode(false)
+    setErrorMessage(message)
+    setLoadingMessage('')
+    setPendingActionLabel(null)
+    setIsCalculatingAutoplay(false)
+    setAutoplayTransitionLatched(false)
+    setReplayFinished(false)
+  }
+
+  useEffect(() => {
+    if (!roomSession) {
+      setRoomConnectionState('disconnected')
+      syncRoomStateRef.current = null
+      return
     }
 
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data) as RoomEvent
-      if (message.type === 'snapshot' && message.room) {
-        setRoomState(message.room)
-        setGame(message.room.game)
+    let active = true
+    let socket: WebSocket | null = null
+
+    const clearTimers = () => {
+      if (reconnectTimeoutRef.current !== null) {
+        window.clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
+      }
+      if (heartbeatIntervalRef.current !== null) {
+        window.clearInterval(heartbeatIntervalRef.current)
+        heartbeatIntervalRef.current = null
+      }
+      if (firstSnapshotTimeoutRef.current !== null) {
+        window.clearTimeout(firstSnapshotTimeoutRef.current)
+        firstSnapshotTimeoutRef.current = null
+      }
+      if (pollingIntervalRef.current !== null) {
+        window.clearInterval(pollingIntervalRef.current)
+        pollingIntervalRef.current = null
+      }
+    }
+
+    const applySnapshot = (room: RoomState) => {
+      const previousRoom = roomStateRef.current
+      if (previousRoom && room.version < previousRoom.version) {
+        return
+      }
+      const opponentLeft =
+        roomSession.playerSide === 'white' &&
+        previousRoom?.black_player &&
+        room.black_player === null
+
+      if (opponentLeft) {
+        clearTimers()
+        if (socket) {
+          socket.close()
+        }
+        resetToLauncher('Opponent left the room.')
         return
       }
 
-      if (message.type === 'room_closed') {
-        setErrorMessage(message.message ?? 'This room was closed.')
-        setStoredRoomSession(null)
-        setRoomSession(null)
-        setRoomState(null)
-        setGame(null)
-        setRoomConnectionState('disconnected')
+      setRoomState(room)
+      setGame(room.game)
+    }
+
+    const syncRoomState = async (): Promise<boolean> => {
+      try {
+        const response = await getRoom(roomSession.roomCode, roomSession.playerToken)
+        if (active) {
+          applySnapshot(response.room)
+        }
+        return true
+      } catch (error) {
+        if (active) {
+          resetToLauncher(error instanceof ApiError && error.status === 404 ? 'This room was closed.' : getErrorMessage(error))
+        }
+        return false
+      }
+    }
+    syncRoomStateRef.current = syncRoomState
+
+    const handleVisibilityRefresh = () => {
+      if (!active) {
+        return
+      }
+      if (document.visibilityState === 'visible') {
+        void syncRoomState()
       }
     }
 
-    socket.onclose = () => {
-      setRoomConnectionState('disconnected')
+    const handleWindowFocus = () => {
+      if (!active) {
+        return
+      }
+      void syncRoomState()
     }
 
+    const connect = () => {
+      if (!active) {
+        return
+      }
+
+      let receivedSocketSnapshot = false
+      const url = new URL(getWebSocketUrl(`/rooms/${roomSession.roomCode}/ws`))
+      url.searchParams.set('player_token', roomSession.playerToken)
+
+      setRoomConnectionState('connecting')
+      socket = new WebSocket(url.toString())
+
+      socket.onopen = async () => {
+        if (!active || !socket) {
+          return
+        }
+        setRoomConnectionState('connected')
+        heartbeatIntervalRef.current = window.setInterval(() => {
+          if (socket?.readyState === WebSocket.OPEN) {
+            socket.send('ping')
+          }
+        }, 15000)
+        firstSnapshotTimeoutRef.current = window.setTimeout(() => {
+          if (active && !receivedSocketSnapshot) {
+            void syncRoomState()
+          }
+        }, 1200)
+      }
+
+      socket.onmessage = (event) => {
+        if (!active) {
+          return
+        }
+        const message = JSON.parse(event.data) as RoomEvent
+        if (message.type === 'snapshot' && message.room) {
+          receivedSocketSnapshot = true
+          if (firstSnapshotTimeoutRef.current !== null) {
+            window.clearTimeout(firstSnapshotTimeoutRef.current)
+            firstSnapshotTimeoutRef.current = null
+          }
+          applySnapshot(message.room)
+          return
+        }
+
+        if (message.type === 'room_closed') {
+          clearTimers()
+          resetToLauncher(message.message ?? 'This room was closed.')
+        }
+      }
+
+      socket.onclose = () => {
+        clearTimers()
+        if (!active) {
+          return
+        }
+        setRoomConnectionState('disconnected')
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          void (async () => {
+            const synced = await syncRoomState()
+            if (active && synced) {
+              connect()
+            }
+          })()
+        }, 1500)
+      }
+    }
+
+    void (async () => {
+      const synced = await syncRoomState()
+      if (active && synced) {
+        connect()
+        pollingIntervalRef.current = window.setInterval(() => {
+          void syncRoomState()
+        }, 2500)
+        document.addEventListener('visibilitychange', handleVisibilityRefresh)
+        window.addEventListener('focus', handleWindowFocus)
+      }
+    })()
+
     return () => {
-      socket.close()
+      active = false
+      syncRoomStateRef.current = null
+      clearTimers()
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh)
+      window.removeEventListener('focus', handleWindowFocus)
+      socket?.close()
     }
   }, [roomSession])
 
@@ -387,9 +583,7 @@ export function App() {
 
     try {
       if (roomSession && roomState) {
-        const response = await getRoom(roomState.room_code, roomSession.playerToken)
-        setRoomState(response.room)
-        setGame(response.room.game)
+        await (syncRoomStateRef.current?.() ?? Promise.resolve())
       } else {
         const response = await getGame(game.game_id)
         setGame(response.game)
@@ -411,23 +605,7 @@ export function App() {
       }
     }
 
-    actionInFlightRef.current = false
-    window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
-    setStoredRoomSession(null)
-    setGame(null)
-    setRoomState(null)
-    setRoomSession(null)
-    setRoomConnectionState('disconnected')
-    setGameSetupMode('local')
-    setHumanSideChoice('white')
-    setJoinRoomCode('')
-    setSelectedPiece('P')
-    setIsKingPlacementMode(false)
-    setErrorMessage(null)
-    setLoadingMessage('')
-    setPendingActionLabel(null)
-    setIsCalculatingAutoplay(false)
-    setReplayFinished(false)
+    resetToLauncher()
   }
 
   async function startNewGame(mode: GameMode = 'local', sideChoice: HumanSideChoice = 'white') {
@@ -442,7 +620,12 @@ export function App() {
     setErrorMessage(null)
     setIsKingPlacementMode(false)
     setSelectedPiece('P')
+    setSelectedPiecesBySide({
+      white: 'P',
+      black: 'P',
+    })
     setIsCalculatingAutoplay(false)
+    setAutoplayTransitionLatched(false)
     setReplayFinished(false)
 
     try {
@@ -470,7 +653,12 @@ export function App() {
     setErrorMessage(null)
     setIsKingPlacementMode(false)
     setSelectedPiece('P')
+    setSelectedPiecesBySide({
+      white: 'P',
+      black: 'P',
+    })
     setIsCalculatingAutoplay(false)
+    setAutoplayTransitionLatched(false)
     setReplayFinished(false)
 
     try {
@@ -506,7 +694,12 @@ export function App() {
     setErrorMessage(null)
     setIsKingPlacementMode(false)
     setSelectedPiece('P')
+    setSelectedPiecesBySide({
+      white: 'P',
+      black: 'P',
+    })
     setIsCalculatingAutoplay(false)
+    setAutoplayTransitionLatched(false)
     setReplayFinished(false)
 
     try {
@@ -540,7 +733,12 @@ export function App() {
     setErrorMessage(null)
     setIsKingPlacementMode(false)
     setSelectedPiece('P')
+    setSelectedPiecesBySide({
+      white: 'P',
+      black: 'P',
+    })
     setIsCalculatingAutoplay(false)
+    setAutoplayTransitionLatched(false)
     setReplayFinished(false)
 
     try {
@@ -578,6 +776,9 @@ export function App() {
     setPendingActionLabel(pendingLabel)
     setErrorMessage(null)
     setIsCalculatingAutoplay(triggersAutoplay)
+    if (triggersAutoplay) {
+      setAutoplayTransitionLatched(true)
+    }
 
     try {
       if (isMultiplayer && roomSession && roomState) {
@@ -585,8 +786,12 @@ export function App() {
           player_token: roomSession.playerToken,
           action: payload,
         })
-        setRoomState(response.room)
-        setGame(response.room.game)
+        const latestRoom = response.room
+        if (!roomStateRef.current || latestRoom.version >= roomStateRef.current.version) {
+          setRoomState(latestRoom)
+          setGame(latestRoom.game)
+        }
+        await (syncRoomStateRef.current?.() ?? Promise.resolve())
       } else {
         const response = await (
           isBotGame
@@ -599,6 +804,7 @@ export function App() {
       }
       setIsKingPlacementMode(false)
     } catch (error) {
+      setAutoplayTransitionLatched(false)
       setErrorMessage(getErrorMessage(error))
     } finally {
       setPendingActionLabel(null)
@@ -650,6 +856,12 @@ export function App() {
       setIsKingPlacementMode(true)
     } else {
       setSelectedPiece(piece)
+      if (game.mode === 'local') {
+        setSelectedPiecesBySide((current) => ({
+          ...current,
+          [game.setup_turn]: piece,
+        }))
+      }
       setIsKingPlacementMode(false)
     }
 
@@ -658,6 +870,16 @@ export function App() {
 
   async function handleFinishSetup() {
     if (!game || actionInFlightRef.current || !isHumanSetupTurn) {
+      return
+    }
+
+    const sideLabel = formatSideLabel(game.setup_turn)
+    const pointsLeft = game[game.setup_turn].points_remaining
+    const confirmed = window.confirm(
+      `Finish setup for ${sideLabel}?\n\nThis locks spending for this side with ${pointsLeft} point${pointsLeft === 1 ? '' : 's'} remaining.`,
+    )
+
+    if (!confirmed) {
       return
     }
 
@@ -670,6 +892,32 @@ export function App() {
     )
   }
 
+  function handleDownloadLog() {
+    if (!game) {
+      return
+    }
+
+    const content = [
+      'Automate Chess Event Log',
+      `Mode: ${formatModeLabel(game.mode)}`,
+      `Phase: ${formatPhaseLabel(game.phase)}`,
+      `White points: ${game.white.points_remaining}`,
+      `Black points: ${game.black.points_remaining}`,
+      '',
+      ...game.event_log.map((entry, index) => `${index + 1}. ${entry}`),
+    ].join('\n')
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `automate-chess-log-${game.game_id}.txt`
+    document.body.append(anchor)
+    anchor.click()
+    anchor.remove()
+    window.URL.revokeObjectURL(url)
+  }
+
   const boardSquares = useMemo(() => (game ? buildBoard(game) : []), [game])
 
   if (!game) {
@@ -677,29 +925,68 @@ export function App() {
 
     return (
       <div className="shell loading-shell">
-        <div className="panel loading-panel premium-card launcher-panel">
-          <div>
-            <p className="eyebrow">New Challenge</p>
-            <h1>Automate Chess</h1>
-            <p className="launcher-copy">
-              Choose a local sandbox, a solo-vs-bot setup game, or a private room match. Finished positions still resolve through the existing autoplay replay.
-            </p>
+        <AppHeader
+          primaryPill="New Challenge"
+          tone="setup"
+          theme={theme}
+          onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+        />
+        <div className="launcher-stage">
+          <div className="launcher-board-backdrop" aria-hidden="true">
+            {Array.from({ length: 49 }, (_, index) => (
+              <span
+                key={index}
+                className={`launcher-board-square ${(Math.floor(index / 7) + (index % 7)) % 2 === 0 ? 'light' : 'dark'}`}
+              />
+            ))}
           </div>
+          <div className="panel loading-panel premium-card launcher-panel">
+            <div className="launcher-hero-copy">
+              <p className="eyebrow">New Challenge</p>
+              <h1>Automate Chess</h1>
+              <p className="launcher-copy">
+                Build your formation, place the kings last, then watch the finished position resolve through full autoplay.
+              </p>
+            </div>
 
-          {isBootstrapping ? (
-            <p>{loadingMessage}</p>
-          ) : (
-            <div className="launcher-controls">
-              <div className="launcher-group">
-                <span className="launcher-label">Mode</span>
-                <div className="launcher-choice-row">
-                  <button
-                    type="button"
-                    className={`choice-pill ${gameSetupMode === 'local' ? 'selected' : ''}`}
-                    onClick={() => setGameSetupMode('local')}
-                  >
-                    Solo Sandbox
-                  </button>
+            <section className="launcher-tutorial">
+              <div className="launcher-tutorial-heading">
+                <p className="eyebrow">Quick Start</p>
+                <strong>Three simple steps</strong>
+              </div>
+              <div className="launcher-step-grid">
+                <article className="launcher-step-card">
+                  <span>1</span>
+                  <strong>Choose a mode</strong>
+                  <p>Play on the same device with a friend, against the bot, or online with a private room code.</p>
+                </article>
+                <article className="launcher-step-card">
+                  <span>2</span>
+                  <strong>Build your setup</strong>
+                  <p>Spend your points to buy and place the pieces that will fight for you.</p>
+                </article>
+                <article className="launcher-step-card">
+                  <span>3</span>
+                  <strong>Let the fight begin</strong>
+                  <p>Watch a grandmaster-level chess engine simulate the battle and see which setup wins.</p>
+                </article>
+              </div>
+            </section>
+
+            {isBootstrapping ? (
+              <p>{loadingMessage}</p>
+            ) : (
+              <div className="launcher-controls">
+                <div className="launcher-group">
+                  <span className="launcher-label">Mode</span>
+                  <div className="launcher-choice-row">
+                    <button
+                      type="button"
+                      className={`choice-pill ${gameSetupMode === 'local' ? 'selected' : ''}`}
+                      onClick={() => setGameSetupMode('local')}
+                    >
+                      Solo Sandbox
+                    </button>
                     <button
                       type="button"
                       className={`choice-pill ${gameSetupMode === 'bot' ? 'selected' : ''}`}
@@ -707,90 +994,91 @@ export function App() {
                     >
                       Solo vs Bot
                     </button>
+                    <button
+                      type="button"
+                      className={`choice-pill ${gameSetupMode === 'multiplayer' ? 'selected' : ''}`}
+                      onClick={() => setGameSetupMode('multiplayer')}
+                    >
+                      Multiplayer Room
+                    </button>
+                  </div>
+                </div>
+
+                {gameSetupMode === 'bot' ? (
+                  <div className="launcher-group">
+                    <span className="launcher-label">Human Side</span>
+                    <div className="launcher-choice-row">
+                      {(['white', 'black', 'random'] as HumanSideChoice[]).map((sideChoice) => (
+                        <button
+                          key={sideChoice}
+                          type="button"
+                          className={`choice-pill ${humanSideChoice === sideChoice ? 'selected' : ''}`}
+                          onClick={() => setHumanSideChoice(sideChoice)}
+                        >
+                          {sideChoice[0].toUpperCase() + sideChoice.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {gameSetupMode === 'multiplayer' ? (
+                  <div className="launcher-group">
+                    <span className="launcher-label">Room Access</span>
+                    <div className="launcher-choice-row multiplayer-room-row">
+                      <button
+                        type="button"
+                        className="button primary compact-action"
+                        onClick={() => {
+                          void handleCreateRoom()
+                        }}
+                      >
+                        Create Room
+                      </button>
+                      <input
+                        type="text"
+                        className="room-code-input"
+                        value={joinRoomCode}
+                        onChange={(event) => setJoinRoomCode(event.target.value.toUpperCase())}
+                        placeholder="Enter code"
+                        maxLength={6}
+                      />
+                      <button
+                        type="button"
+                        className="button ghost compact-action"
+                        onClick={() => {
+                          void handleJoinRoom()
+                        }}
+                      >
+                        Join Room
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {gameSetupMode !== 'multiplayer' ? (
                   <button
                     type="button"
-                    className={`choice-pill ${gameSetupMode === 'multiplayer' ? 'selected' : ''}`}
-                    onClick={() => setGameSetupMode('multiplayer')}
+                    className="button primary launcher-start-button"
+                    onClick={() => {
+                      void startNewGame(gameSetupMode, humanSideChoice)
+                    }}
                   >
-                    Multiplayer Room
+                    Start {formatModeLabel(gameSetupMode)}
                   </button>
-                </div>
+                ) : null}
               </div>
+            )}
 
-              {gameSetupMode === 'bot' ? (
-                <div className="launcher-group">
-                  <span className="launcher-label">Human Side</span>
-                  <div className="launcher-choice-row">
-                    {(['white', 'black', 'random'] as HumanSideChoice[]).map((sideChoice) => (
-                      <button
-                        key={sideChoice}
-                        type="button"
-                        className={`choice-pill ${humanSideChoice === sideChoice ? 'selected' : ''}`}
-                        onClick={() => setHumanSideChoice(sideChoice)}
-                      >
-                        {sideChoice[0].toUpperCase() + sideChoice.slice(1)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {gameSetupMode === 'multiplayer' ? (
-                <div className="launcher-group">
-                  <span className="launcher-label">Room Access</span>
-                  <div className="launcher-choice-row multiplayer-room-row">
-                    <button
-                      type="button"
-                      className="button primary compact-action"
-                      onClick={() => {
-                        void handleCreateRoom()
-                      }}
-                    >
-                      Create Room
-                    </button>
-                    <input
-                      type="text"
-                      className="room-code-input"
-                      value={joinRoomCode}
-                      onChange={(event) => setJoinRoomCode(event.target.value.toUpperCase())}
-                      placeholder="Enter code"
-                      maxLength={6}
-                    />
-                    <button
-                      type="button"
-                      className="button ghost compact-action"
-                      onClick={() => {
-                        void handleJoinRoom()
-                      }}
-                    >
-                      Join Room
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {gameSetupMode !== 'multiplayer' ? (
-                <button
-                  type="button"
-                  className="button primary launcher-start-button"
-                  onClick={() => {
-                    void startNewGame(gameSetupMode, humanSideChoice)
-                  }}
-                >
-                  Start {formatModeLabel(gameSetupMode)}
+            {errorMessage ? (
+              <>
+                <p className="error-message">{errorMessage}</p>
+                <button type="button" className="button ghost" onClick={() => window.location.reload()}>
+                  Retry restore
                 </button>
-              ) : null}
-            </div>
-          )}
-
-          {errorMessage ? (
-            <>
-              <p className="error-message">{errorMessage}</p>
-              <button type="button" className="button ghost" onClick={() => window.location.reload()}>
-                Retry restore
-              </button>
-            </>
-          ) : null}
+              </>
+            ) : null}
+          </div>
         </div>
       </div>
     )
@@ -800,23 +1088,6 @@ export function App() {
   const botTurnActive = isSetupActive && isBotGame && !isHumanSetupTurn
   const multiplayerWaiting = isMultiplayer && roomState?.status === 'waiting'
   const multiplayerSideLabel = roomSession?.playerSide ? roomSession.playerSide[0].toUpperCase() + roomSession.playerSide.slice(1) : null
-  const selectedModeLabel = !isSetupActive
-    ? game.phase === 'ready_for_autoplay'
-      ? 'Setup complete'
-      : botTurnActive
-        ? 'Bot is choosing a setup move'
-      : multiplayerWaiting
-        ? 'Waiting for opponent to join'
-      : formatPhaseLabel(game.phase)
-    : isKingPlacementMode
-      ? `King placement for ${game.setup_turn}`
-      : botTurnActive
-        ? `${game.bot_side} bot to move`
-      : multiplayerWaiting
-        ? 'Waiting for opponent to join'
-      : selectedPiece
-        ? `${game.setup_turn} placing ${PIECE_LABELS[selectedPiece]}`
-        : 'Select a piece'
   const selectedPieceLabel = !isSetupActive
     ? 'Locked'
     : isKingPlacementMode
@@ -825,12 +1096,25 @@ export function App() {
         ? PIECE_LABELS[selectedPiece]
         : 'None'
   const activePlayerStatus = getActivePlayerStatus(game)
-  const readyForAutoplay = game.phase === 'ready_for_autoplay'
+  const bothKingsPlaced = Boolean(game.white.king_square && game.black.king_square)
+  const readyForAutoplay = game.autoplay.status === 'pending' || game.phase === 'ready_for_autoplay'
   const autoplayReady = game.phase === 'autoplay' && game.autoplay.status === 'ready' && !!game.autoplay.initial_fen
   const autoplayPhase = game.phase === 'autoplay'
+  const sharedAutoplayPending = game.autoplay.status === 'pending' || game.autoplay.status === 'running'
+  const transitionalCalculatingGuard =
+    bothKingsPlaced &&
+    !autoplayReady &&
+    game.autoplay.status !== 'ready' &&
+    game.autoplay.status !== 'failed'
+  const sharedCalculatingState = readyForAutoplay || sharedAutoplayPending || transitionalCalculatingGuard
+  const showCalculatingOverlay =
+    autoplayTransitionLatched ||
+    (isMultiplayer ? sharedCalculatingState : isCalculatingAutoplay || sharedCalculatingState)
   const phaseBadge = readyForAutoplay ? 'Setup Complete' : formatPhaseLabel(game.phase)
   const headerTone = getHeaderTone(game)
-  const headerSecondaryPill = isMultiplayer && roomState ? `Room ${roomState.room_code}` : undefined
+  const headerSecondaryPill = isMultiplayer && roomState
+    ? `Room ${roomState.room_code} · ${roomConnectionState}`
+    : undefined
   const humanSideLabel = isMultiplayer
     ? multiplayerSideLabel
     : game.human_side
@@ -848,6 +1132,9 @@ export function App() {
           tone={replayFinished ? 'complete' : 'autoplay'}
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+          onBackToMenu={() => {
+            void backToMenu()
+          }}
         />
         <AutoplayViewer
           game={game}
@@ -871,7 +1158,7 @@ export function App() {
     )
   }
 
-  if (isCalculatingAutoplay) {
+  if (showCalculatingOverlay) {
     return (
       <div className="shell">
         <AppHeader
@@ -880,6 +1167,9 @@ export function App() {
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+          onBackToMenu={() => {
+            void backToMenu()
+          }}
         />
 
         <main className="layout">
@@ -958,11 +1248,6 @@ export function App() {
 
               {pendingActionLabel ? <p className="status-message">{pendingActionLabel}</p> : null}
               {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
-              <button type="button" className="button ghost secondary-utility-button" onClick={() => {
-                void backToMenu()
-              }}>
-                Back to menu
-              </button>
             </section>
           </aside>
         </main>
@@ -991,6 +1276,9 @@ export function App() {
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+          onBackToMenu={() => {
+            void backToMenu()
+          }}
         />
 
         <main className="layout">
@@ -1030,11 +1318,17 @@ export function App() {
                       >
                         Refresh replay state
                       </button>
-                      <button type="button" className="button ghost" onClick={() => {
-                        void backToMenu()
-                      }}>
-                        Back to menu
-                      </button>
+                      {game.autoplay.status === 'failed' ? (
+                        <button
+                          type="button"
+                          className="button ghost"
+                          onClick={() => {
+                            void backToMenu()
+                          }}
+                        >
+                          Back to menu
+                        </button>
+                      ) : null}
                     </section>
                   </div>
                 </div>
@@ -1054,6 +1348,9 @@ export function App() {
         tone={headerTone}
         theme={theme}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+        onBackToMenu={() => {
+          void backToMenu()
+        }}
       />
 
       <main className="layout">
@@ -1061,8 +1358,8 @@ export function App() {
           <div className="board-stage">
             <div className="stage-heading">
               <div>
-                <p className="eyebrow">Board Control</p>
-                <h2>{selectedModeLabel}</h2>
+                <p className="eyebrow">Arena</p>
+                <h2>Formation Board</h2>
               </div>
             </div>
 
@@ -1081,7 +1378,7 @@ export function App() {
                 activeSide={game.setup_turn}
                 interactive={isSetupActive && isHumanSetupTurn && pendingActionLabel === null}
                 selectedSquare={null}
-                selectedModeLabel={selectedModeLabel}
+                selectedModeLabel={multiplayerWaiting ? 'Awaiting opponent' : `${formatSideLabel(game.setup_turn)} to move`}
                 squares={boardSquares}
                 onSquareClick={(square) => {
                   void handleSquareClick(square)
@@ -1120,9 +1417,7 @@ export function App() {
           onLoadSample={() => {
             void loadSampleGame()
           }}
-          onBackToMenu={() => {
-            void backToMenu()
-          }}
+          onDownloadLog={handleDownloadLog}
           statusTone={headerTone}
         />
       </main>

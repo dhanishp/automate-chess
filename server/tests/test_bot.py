@@ -40,6 +40,21 @@ def test_easy_bot_generates_legal_action() -> None:
     assert updated.setup_turn == Side.BLACK
 
 
+def test_easy_bot_does_not_finish_while_legal_piece_placements_remain() -> None:
+    rules = AutomateRulesEngine()
+    bot = EasySetupBot(rules, random.Random(0))
+    game = GameState(mode=GameMode.BOT, human_side=Side.WHITE, bot_side=Side.BLACK, setup_turn=Side.BLACK)
+
+    for square in ("a7", "b7", "c7", "d7", "e7", "f7"):
+        game.black.pieces.append(PlacedPiece(type="P", square=square))
+    game.black.points_remaining = 4
+
+    candidates = bot.enumerate_legal_actions(game, Side.BLACK)
+
+    assert candidates
+    assert all(candidate.action.action_type is not ActionType.FINISH_SETUP for candidate in candidates)
+
+
 def test_easy_bot_respects_setup_constraints_over_multiple_turns() -> None:
     rules = AutomateRulesEngine()
     bot = EasySetupBot(rules, random.Random(1))

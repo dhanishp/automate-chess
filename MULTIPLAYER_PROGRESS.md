@@ -20,6 +20,15 @@
 - Added frontend launcher support for private room multiplayer with `Create Room` and `Join Room` actions.
 - Added room-session restore, live WebSocket synchronization, room-code display, side display, waiting-for-opponent state, and board locking when it is not the player’s turn.
 - Kept autoplay/replay UI intact for multiplayer by reusing the shared game snapshot and letting each client replay the same generated engine game locally in v1.
+- LAN-readiness pass: the dev launcher now binds frontend and backend to `0.0.0.0`, the frontend defaults its API/WebSocket host to the current browser hostname, and README now includes a short same-network play section.
+- Vite LAN fix: `client/vite.config.ts` now explicitly serves dev on `0.0.0.0:5173`, uses `strictPort: true`, allows LAN hosts during local development, and reads `PUBLIC_HOST` for HMR so other devices on the same network can connect reliably.
+- Fixed the final-king multiplayer sync gap: room actions now broadcast a shared autoplay-pending snapshot before engine generation finishes, so the non-acting client no longer stays on stale setup UI while the acting client is already calculating.
+- Added a production-style LAN/local runtime path with `run-lan.sh`: it builds `client/dist`, starts FastAPI on `0.0.0.0:8000`, and serves the frontend from the backend for same-origin LAN play without depending on the Vite dev server.
+- Mobile/multiplayer polish pass:
+  - replaced Unicode piece glyphs with app-controlled inline SVG icons so Safari/iOS cannot substitute platform-specific chess symbols,
+  - hardened room sync with an initial room fetch before relying on WebSocket updates, plus a light reconnect/heartbeat loop,
+  - made the shared calculating overlay derive from the room's shared autoplay-running state,
+  - and cleanly returns the remaining player to the launcher with an `Opponent left the room.` message when the other player exits.
 
 ## Files Changed
 - `MULTIPLAYER_PROGRESS.md`
@@ -33,13 +42,14 @@
 - `client/src/theme/styles.css`
 
 ## Validation
-- `cd server && .venv/bin/pytest -q` -> `30 passed`
+- `cd server && .venv/bin/pytest -q` -> `31 passed`
 - `cd client && npm run build` -> passed
 
 ## Remaining Manual QA
 - Open two browser windows and verify the full create-room / join-room flow with live board updates in both directions.
+- Verify the same flow from a second device on the same LAN using the host machine's local IP.
 - Confirm waiting-room behavior feels clear for the White player before Black joins.
-- Confirm both players transition into the same autoplay-ready state after final king placement.
+- Confirm both players transition into the same calculating / autoplay-pending state immediately after final king placement, then into replay once generation completes.
 - Sanity-check leave-room behavior:
   - Black leaves and White stays in a waiting state.
   - White leaves and the room closes for both clients.
