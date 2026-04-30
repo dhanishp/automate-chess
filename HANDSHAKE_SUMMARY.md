@@ -21,9 +21,9 @@ I wanted to bring back the feeling of Automate chess: the mix of puzzle, draftin
 - Server-authoritative legality and setup turn order.
 - Legal placement highlights during setup.
 - SVG chess pieces controlled by the app.
-- Stockfish autoplay/replay after both kings are placed.
-- Replay controls, including pause, step, speed, restart, skip, and replay again.
-- Copyable move/replay notation.
+- Stockfish battle simulation after both kings are placed.
+- Battle playback controls, including pause, step, speed, restart, skip, and watch again.
+- Copyable move/battle notation.
 - Public Render deployment path with Docker and Stockfish included.
 - `/health` and `/ready` checks, including lightweight Stockfish readiness.
 
@@ -40,7 +40,7 @@ I wanted to bring back the feeling of Automate chess: the mix of puzzle, draftin
 
 - Built a server-authoritative setup rules engine so the frontend cannot invent illegal placements or turn order.
 - Added synchronized room state and token-redacted room snapshots so each player can act only as their assigned side.
-- Made multiplayer setup and autoplay transitions shared, including failure states when Stockfish is missing or fails.
+- Made multiplayer setup and battle-generation transitions shared, including failure states when Stockfish is missing or fails.
 - Added public Open Games without exposing room/player tokens or adding accounts.
 - Hardened deployment with a single-origin production setup, WebSocket compatibility, Stockfish installation, and readiness checks.
 - Added active game/player stats while keeping the implementation intentionally simple for single-instance deployment.
@@ -52,17 +52,17 @@ I wanted to bring back the feeling of Automate chess: the mix of puzzle, draftin
 - Rooms disappear on server restart, redeploy, crash, or free-host sleep.
 - There are no accounts, profiles, matchmaking queues, or persistent room history.
 - Public Open Games is a lightweight list of joinable public rooms, not a full matchmaking system.
-- Multiplayer replay data is shared, but replay controls are local per client.
+- Multiplayer battle data is shared, but playback controls are local per client.
 - Render free hosting can sleep and cold start, so demos should warm `/ready` first.
 
 ## 3-Minute Demo Outline
 
 1. Show the launcher: point out engine readiness, live activity, solo modes, multiplayer, and Open Games.
 2. Start a solo sandbox or singleplayer vs bot game: buy pieces, show point budget, legal highlights, and place kings last.
-3. Let Stockfish resolve the completed position: show calculating state, replay controls, and copy move list.
+3. Let Stockfish resolve the completed position: show calculating state, battle controls, and copy move list.
 4. Show multiplayer briefly: create a public or private room, copy invite link, join from another browser, and point out synchronized setup.
-5. Close with limitations: single-instance, in-memory rooms, no accounts, and replay controls are local.
+5. Close with limitations: single-instance, in-memory rooms, no accounts, and playback controls are local.
 
 ## Submission Framing
 
-Automate Chess is not trying to be a full chess platform. It is a focused, playable reconstruction of a mode I missed, packaged as a browser app that can be tested publicly. The goal was to make the core loop work end to end: build a formation, place kings, resolve with Stockfish, replay the result, and make that experience shareable with another person online.
+Automate Chess is not trying to be a full chess platform. It is a focused, playable reconstruction of a mode I missed, packaged as a browser app that can be tested publicly. The goal was to make the core loop work end to end: build a formation, place kings, resolve with Stockfish, watch the battle, and make that experience shareable with another person online.

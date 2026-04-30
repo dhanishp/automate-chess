@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Side(str, Enum):
@@ -105,6 +110,8 @@ class GameRules(BaseModel):
 class GameState(BaseModel):
     game_id: str = Field(default_factory=lambda: uuid4().hex[:10])
     mode: GameMode = GameMode.LOCAL
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     human_side: Side | None = None
     bot_side: Side | None = None
     phase: Phase = Phase.SETUP
@@ -188,6 +195,9 @@ class RoomState(BaseModel):
     version: int = 0
     status: RoomStatus
     visibility: RoomVisibility = RoomVisibility.PRIVATE
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    last_activity_at: datetime = Field(default_factory=utc_now)
     game: GameState
     white_player: RoomPlayerState
     black_player: RoomPlayerState | None = None

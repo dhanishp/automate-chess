@@ -126,6 +126,7 @@ select {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
 }
 
@@ -151,6 +152,10 @@ select {
 .theme-toggle:hover {
   transform: translateY(-1px);
   background: rgba(255, 255, 255, 0.06);
+}
+
+.topbar-action {
+  margin-left: auto;
 }
 
 .theme-icon,
@@ -263,7 +268,25 @@ select {
 }
 
 .pill.system-pill {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.pill.total-battles-pill {
+  color: var(--amber-strong);
+  border-color: rgba(242, 186, 107, 0.22);
+  background: rgba(242, 186, 107, 0.055);
+}
+
+.pill.total-battles-pill .pill-dot {
+  background: var(--amber);
+}
+
+.pill.room-pill {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .layout {
@@ -460,7 +483,7 @@ select {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 100;
   display: grid;
   place-items: center;
   padding: 22px;
@@ -469,6 +492,9 @@ select {
 
 .confirmation-modal {
   width: min(100%, 460px);
+  max-height: min(88vh, 640px);
+  max-height: min(88dvh, 640px);
+  overflow: auto;
   display: grid;
   gap: 16px;
   padding: 22px;
@@ -1490,6 +1516,32 @@ select {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 
+:root[data-theme='light'] .panel {
+  border-color: rgba(49, 42, 35, 0.14);
+}
+
+:root[data-theme='light'] .status-message {
+  background: rgba(88, 121, 58, 0.1);
+  border-color: rgba(88, 121, 58, 0.22);
+  color: #46642d;
+}
+
+:root[data-theme='light'] .hint-message {
+  background: rgba(255, 255, 255, 0.64);
+  border-color: rgba(49, 42, 35, 0.12);
+  color: #514b43;
+}
+
+:root[data-theme='light'] .error-message {
+  background: rgba(180, 91, 88, 0.08);
+  border-color: rgba(180, 91, 88, 0.24);
+  color: #943e3b;
+}
+
+:root[data-theme='light'] .status-chip {
+  background: rgba(255, 255, 255, 0.42);
+}
+
 .move-list li span,
 .move-list li code {
   color: var(--muted);
@@ -1863,6 +1915,11 @@ select {
     align-items: flex-start;
   }
 
+  .topbar-meta {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .layout {
     gap: 14px;
   }
@@ -1909,5 +1966,15 @@ select {
 
   .shop-points-strip {
     grid-template-columns: 1fr;
+  }
+
+  .modal-backdrop {
+    align-items: end;
+    padding: 14px;
+  }
+
+  .confirmation-modal {
+    width: 100%;
+    max-height: calc(100dvh - 28px);
   }
 }

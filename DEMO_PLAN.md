@@ -37,19 +37,19 @@ Say:
 
 > The backend is authoritative for legality and turn order. The frontend helps by highlighting legal squares, but the server still validates every action.
 
-### 1:10-1:50 - Stockfish Autoplay And Replay
+### 1:10-1:50 - Stockfish Battle Simulation
 
 Action:
 
 - Place the final king.
-- Show calculating/autoplay state.
-- Let replay appear.
-- Use pause, step, speed, restart/replay, or skip controls.
+- Show the calculating battle state.
+- Let the battle simulation appear.
+- Use pause, step, speed, restart/watch-again, or skip controls.
 - Open/copy the move list if available.
 
 Say:
 
-> Once both kings are placed, the setup locks and Stockfish resolves the position. The replay is shareable as a move list, but this is not claimed as full PGN because the starting positions are custom.
+> Once both kings are placed, the setup locks and Stockfish resolves the position. The battle notation is shareable as a move list, but this is not claimed as full PGN because the starting positions are custom.
 
 ### 1:50-2:35 - Multiplayer
 
@@ -75,7 +75,7 @@ Show:
 
 Say:
 
-> The app is deployed as a single FastAPI service on Render. It serves the React frontend, handles WebSockets, and includes Stockfish in Docker. The current version is intentionally simple: rooms are in memory, single-instance only, no accounts, no persistent matchmaking, and replay controls are local per client.
+> The app is deployed as a single FastAPI service on Render. It serves the React frontend, handles WebSockets, and includes Stockfish in Docker. The current version is intentionally simple: rooms are in memory, single-instance only, no accounts, no persistent matchmaking, and playback controls are local per client.
 
 ## Optional Demo Beats
 

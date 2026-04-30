@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,19 @@ class EngineError(RuntimeError):
 
 class EngineUnavailableError(EngineError):
     pass
+
+
+EXPECTED_ENGINE_FAILURES = (EngineError, chess.engine.EngineError, TimeoutError, OSError)
+logger = logging.getLogger(__name__)
+
+
+def format_engine_failure(exc: BaseException) -> str:
+    if isinstance(exc, chess.engine.EngineTerminatedError):
+        return f"Stockfish crashed during battle generation: {exc}"
+    if isinstance(exc, TimeoutError):
+        return f"Stockfish timed out during battle generation: {exc}"
+    message = str(exc)
+    return message if message else exc.__class__.__name__
 
 
 class EngineProvider(Protocol):
@@ -100,6 +114,56 @@ class LocalStockfishProvider:
             message="Stockfish is ready.",
         )
 
+    def warmup_search(self, timeout_s: float = 3.0) -> StockfishReadiness:
+        try:
+            stockfish_path = self._resolve_stockfish_path()
+        except EngineUnavailableError as exc:
+            return StockfishReadiness(available=False, path=None, message=str(exc))
+
+        try:
+            engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, timeout=timeout_s)
+        except FileNotFoundError:
+            return StockfishReadiness(available=False, path=stockfish_path, message=self._missing_engine_message())
+        except OSError as exc:
+            return StockfishReadiness(
+                available=False,
+                path=stockfish_path,
+                message=f"Unable to launch Stockfish at {stockfish_path}: {exc}",
+            )
+        except Exception as exc:
+            return StockfishReadiness(
+                available=False,
+                path=stockfish_path,
+                message=f"Stockfish was found at {stockfish_path}, but warmup launch failed: {exc}",
+            )
+
+        try:
+            board = chess.Board()
+            result = engine.play(board, chess.engine.Limit(depth=1, time=0.05))
+            if result.move is None:
+                return StockfishReadiness(
+                    available=False,
+                    path=stockfish_path,
+                    message="Stockfish launched, but did not return a warmup move.",
+                )
+        except Exception as exc:
+            return StockfishReadiness(
+                available=False,
+                path=stockfish_path,
+                message=f"Stockfish launched, but warmup search failed: {exc}",
+            )
+        finally:
+            try:
+                engine.quit()
+            except Exception:
+                pass
+
+        return StockfishReadiness(
+            available=True,
+            path=stockfish_path,
+            message="Stockfish is warmed and ready for battle simulation.",
+        )
+
     def generate_autoplay(self, game: GameState) -> AutoplayState:
         stockfish_path = self._resolve_stockfish_path()
         board = board_from_game(game)
@@ -112,6 +176,8 @@ class LocalStockfishProvider:
             raise EngineUnavailableError(self._missing_engine_message()) from exc
         except OSError as exc:
             raise EngineUnavailableError(f"Unable to launch Stockfish at {stockfish_path}: {exc}") from exc
+        except chess.engine.EngineError as exc:
+            raise EngineError(format_engine_failure(exc)) from exc
 
         moves: list[ReplayMove] = []
 
@@ -123,19 +189,27 @@ class LocalStockfishProvider:
                     **({"Skill Level": self._config.skill_level} if self._config.skill_level is not None else {}),
                 }
             )
+        except chess.engine.EngineTerminatedError as exc:
+            raise EngineError(format_engine_failure(exc)) from exc
         except chess.engine.EngineError:
             # Older or different builds may not support every option; replay generation can still continue.
             pass
+        except (TimeoutError, OSError) as exc:
+            raise EngineError(format_engine_failure(exc)) from exc
 
         try:
             for ply in range(1, self._config.max_plies + 1):
                 if board.is_game_over():
                     break
 
-                result = engine.play(
-                    board,
-                    chess.engine.Limit(time=self._config.movetime_ms / 1000),
-                )
+                try:
+                    result = engine.play(
+                        board,
+                        chess.engine.Limit(time=self._config.movetime_ms / 1000),
+                    )
+                except EXPECTED_ENGINE_FAILURES as exc:
+                    raise EngineError(format_engine_failure(exc)) from exc
+
                 if result.move is None:
                     break
 
@@ -150,7 +224,7 @@ class LocalStockfishProvider:
                     )
                 )
         finally:
-            engine.quit()
+            self._quit_engine_safely(engine, "battle generation")
 
         outcome = board.outcome()
         result_text = outcome.result() if outcome else board.result(claim_draw=True)
@@ -191,6 +265,12 @@ class LocalStockfishProvider:
             "or install Stockfish in a common location such as /opt/homebrew/bin/stockfish "
             "or /usr/games/stockfish."
         )
+
+    def _quit_engine_safely(self, engine: chess.engine.SimpleEngine, context: str) -> None:
+        try:
+            engine.quit()
+        except Exception as exc:
+            logger.warning("Stockfish cleanup failed after %s: %s", context, exc)
 
 
 def board_from_game(game: GameState) -> chess.Board:

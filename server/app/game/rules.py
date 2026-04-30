@@ -30,17 +30,26 @@ NON_KING_PIECES: tuple[PieceType, ...] = (
 
 
 class AutomateRulesEngine:
+    def auto_finish_unspendable_sides(self, game: GameState) -> GameState:
+        for side in (Side.WHITE, Side.BLACK):
+            self._auto_finish_if_no_legal_affordable_buys(game, side)
+        return game
+
     def apply_action(self, game: GameState, action: ActionRequest) -> GameState:
         if game.phase != Phase.SETUP:
             raise RuleViolation("Setup actions are only allowed during the setup phase.")
         if action.side != game.setup_turn:
             raise RuleViolation(f"It is {game.setup_turn.value}'s turn.")
 
+        auto_finished = self._auto_finish_if_no_legal_affordable_buys(game, action.side)
+
         match action.action_type:
             case ActionType.PLACE_PIECE:
                 self._place_piece(game, action.side, action.piece_type, action.square)
+                self._auto_finish_if_no_legal_affordable_buys(game, action.side)
             case ActionType.FINISH_SETUP:
-                self._finish_setup(game, action.side)
+                if not auto_finished:
+                    self._finish_setup(game, action.side)
             case ActionType.PLACE_KING:
                 self._place_king(game, action.side, action.square)
             case _:
@@ -98,6 +107,24 @@ class AutomateRulesEngine:
         player.finished_spending = True
         game.event_log.append(f"{side.value} finished spending with {player.points_remaining} points remaining")
 
+    def _auto_finish_if_no_legal_affordable_buys(self, game: GameState, side: Side) -> bool:
+        player = game.player(side)
+        if game.phase is not Phase.SETUP:
+            return False
+        if player.finished_spending or player.king_square is not None:
+            return False
+        if player.mandatory_pawn_count < game.rules.mandatory_pawns:
+            return False
+        if self.has_legal_affordable_non_king_placement(game, side):
+            return False
+
+        player.finished_spending = True
+        game.event_log.append(
+            f"{side.value} setup locked automatically; no legal affordable buys remain with "
+            f"{player.points_remaining} points remaining"
+        )
+        return True
+
     def _place_king(self, game: GameState, side: Side, square: str | None) -> None:
         assert square is not None
         player = game.player(side)
@@ -127,7 +154,7 @@ class AutomateRulesEngine:
             return
         if game.white.king_square and game.black.king_square:
             game.phase = Phase.READY_FOR_AUTOPLAY
-            game.event_log.append("Both kings placed. Game is ready for autoplay.")
+            game.event_log.append("Both kings placed. Battle simulation is ready.")
             return
         next_side = game.setup_turn.opposite
         if self._side_setup_complete(game, next_side) and not self._side_setup_complete(game, next_side.opposite):

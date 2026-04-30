@@ -4,9 +4,16 @@ export type AppTheme = 'dark' | 'light'
 interface AppHeaderProps {
   primaryPill?: string
   secondaryPill?: string
+  tertiaryPill?: string
+  quaternaryPill?: string
   primaryPillClassName?: string
   secondaryPillClassName?: string
+  tertiaryPillClassName?: string
+  quaternaryPillClassName?: string
+  primaryTone?: HeaderTone
   secondaryTone?: HeaderTone
+  tertiaryTone?: HeaderTone
+  quaternaryTone?: HeaderTone
   tone: HeaderTone
   theme: AppTheme
   onToggleTheme: () => void
@@ -41,12 +48,32 @@ function ExitIcon() {
   )
 }
 
+function HeaderPill({ label, tone, className }: { label?: string; tone: HeaderTone; className?: string }) {
+  if (!label) {
+    return null
+  }
+
+  return (
+    <div className={`pill tone-${tone}${className ? ` ${className}` : ''}`}>
+      <span className={`pill-dot tone-${tone}`} aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  )
+}
+
 export function AppHeader({
   primaryPill,
   secondaryPill,
+  tertiaryPill,
+  quaternaryPill,
   primaryPillClassName,
   secondaryPillClassName,
+  tertiaryPillClassName,
+  quaternaryPillClassName,
+  primaryTone,
   secondaryTone,
+  tertiaryTone,
+  quaternaryTone,
   tone,
   theme,
   onToggleTheme,
@@ -64,27 +91,19 @@ export function AppHeader({
         </div>
       </div>
       <div className="topbar-meta">
+        <HeaderPill label={primaryPill} tone={primaryTone ?? tone} className={primaryPillClassName} />
+        <HeaderPill label={secondaryPill} tone={secondaryTone ?? tone} className={secondaryPillClassName} />
+        <HeaderPill label={tertiaryPill} tone={tertiaryTone ?? tone} className={tertiaryPillClassName} />
+        <HeaderPill label={quaternaryPill} tone={quaternaryTone ?? tone} className={quaternaryPillClassName} />
+        <button type="button" className="theme-toggle" onClick={onToggleTheme} aria-label="Toggle light and dark theme">
+          {theme === 'dark' ? <MoonIcon /> : <SunIcon />}
+          <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+        </button>
         {onBackToMenu ? (
           <button type="button" className="topbar-action" onClick={onBackToMenu}>
             <ExitIcon />
             <span>{backLabel}</span>
           </button>
-        ) : null}
-        <button type="button" className="theme-toggle" onClick={onToggleTheme} aria-label="Toggle light and dark theme">
-          {theme === 'dark' ? <MoonIcon /> : <SunIcon />}
-          <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
-        </button>
-        {primaryPill ? (
-          <div className={`pill tone-${tone}${primaryPillClassName ? ` ${primaryPillClassName}` : ''}`}>
-            <span className={`pill-dot tone-${tone}`} aria-hidden="true" />
-            <span>{primaryPill}</span>
-          </div>
-        ) : null}
-        {secondaryPill ? (
-          <div className={`pill tone-${secondaryTone ?? tone}${secondaryPillClassName ? ` ${secondaryPillClassName}` : ''}`}>
-            <span className={`pill-dot tone-${secondaryTone ?? tone}`} aria-hidden="true" />
-            <span>{secondaryPill}</span>
-          </div>
         ) : null}
       </div>
     </header>

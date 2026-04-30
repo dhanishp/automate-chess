@@ -123,6 +123,7 @@ export interface StatsResponse {
   active_players: number
   players_online: number
   occupied_players: number
+  total_battles_played: number
 }
 
 export interface ReadyResponse {
@@ -132,6 +133,14 @@ export interface ReadyResponse {
     available: boolean
     path: string | null
     message: string
+  }
+}
+
+export interface WarmupResponse extends ReadyResponse {
+  warmup: {
+    complete: boolean
+    cached: boolean
+    cache_ttl_seconds: number
   }
 }
 
@@ -186,11 +195,13 @@ export interface RoomActionRequest {
 
 export class ApiError extends Error {
   status: number
+  details: unknown
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, details?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.details = details
   }
 }
 
@@ -208,23 +219,67 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   })
 
+  const body = await parseResponseBody(response)
+
   if (!response.ok) {
-    let message = `Request failed with status ${response.status}`
-
-    try {
-      const data = (await response.json()) as { detail?: unknown }
-      message = formatErrorDetail(data.detail, message)
-    } catch {
-      const text = await response.text()
-      if (text) {
-        message = text
-      }
-    }
-
-    throw new ApiError(message, response.status)
+    const fallback = `Request failed with status ${response.status}`
+    throw new ApiError(formatErrorBody(body, fallback), response.status, body)
   }
 
-  return response.json() as Promise<T>
+  return body as T
+}
+
+async function parseResponseBody(response: Response): Promise<unknown> {
+  let text = ''
+
+  try {
+    text = await response.text()
+  } catch {
+    throw new ApiError('The server response could not be read. Try again in a moment.', response.status)
+  }
+
+  if (!text) {
+    return null
+  }
+
+  const contentType = response.headers.get('content-type') ?? ''
+  const shouldParseJson = contentType.includes('application/json') || text.trim().startsWith('{') || text.trim().startsWith('[')
+
+  if (!shouldParseJson) {
+    return text
+  }
+
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    if (response.ok) {
+      throw new ApiError('The server returned an unreadable response. Try again in a moment.', response.status, text)
+    }
+
+    return text
+  }
+}
+
+function formatErrorBody(body: unknown, fallback: string): string {
+  if (typeof body === 'string' && body.trim()) {
+    return body
+  }
+
+  if (body && typeof body === 'object') {
+    if ('detail' in body) {
+      return formatErrorDetail(body.detail, fallback)
+    }
+
+    if ('message' in body) {
+      return formatErrorDetail(body.message, fallback)
+    }
+
+    if ('error' in body) {
+      return formatErrorDetail(body.error, fallback)
+    }
+  }
+
+  return fallback
 }
 
 function formatErrorDetail(detail: unknown, fallback: string): string {
@@ -280,6 +335,24 @@ export function abandonGame(gameId: string): Promise<{ status: string }> {
   })
 }
 
+export function abandonGameOnUnload(gameId: string): boolean {
+  const url = `${apiBaseUrl}/games/${gameId}/abandon`
+
+  if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+    return navigator.sendBeacon(url)
+  }
+
+  if (typeof fetch !== 'undefined') {
+    void fetch(url, {
+      method: 'POST',
+      keepalive: true,
+    }).catch(() => {})
+    return true
+  }
+
+  return false
+}
+
 export function applyAction(gameId: string, payload: ActionRequest): Promise<ApiResponse> {
   return request<ApiResponse>(`/games/${gameId}/actions`, {
     method: 'POST',
@@ -326,6 +399,12 @@ export function getStats(): Promise<StatsResponse> {
 
 export function getReadiness(): Promise<ReadyResponse> {
   return request<ReadyResponse>('/ready')
+}
+
+export function warmupEngine(): Promise<WarmupResponse> {
+  return request<WarmupResponse>('/warmup', {
+    method: 'POST',
+  })
 }
 
 export function getOpenRooms(): Promise<OpenRoomSummary[]> {

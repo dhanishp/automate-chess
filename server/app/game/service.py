@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import random
 from typing import Dict
 
 from app.game.bot import BotMoveError, EasySetupBot
-from app.game.engine import EngineError, EngineProvider, LocalStockfishProvider
+from app.game.engine import EXPECTED_ENGINE_FAILURES, EngineProvider, LocalStockfishProvider, format_engine_failure
 from app.game.models import (
     ActionRequest,
     AutoplayState,
@@ -16,18 +17,23 @@ from app.game.models import (
     HumanSideChoice,
     Phase,
     Side,
+    utc_now,
 )
 from app.game.presets import build_sample_game_actions
 from app.game.rules import AutomateRulesEngine
 
 
 class GameService:
+    ACTIVE_GAME_IDLE_TIMEOUT = timedelta(minutes=15)
+    TERMINAL_GAME_CLEANUP_TIMEOUT = timedelta(minutes=60)
+
     def __init__(self, engine_provider: EngineProvider | None = None, rng: random.Random | None = None) -> None:
         self._games: Dict[str, GameState] = {}
         self._rules_engine = AutomateRulesEngine()
         self._engine_provider = engine_provider or LocalStockfishProvider()
         self._rng = rng or random.Random()
         self._setup_bot = EasySetupBot(self._rules_engine, self._rng)
+        self._total_battles_played = 0
 
     def create_solo_game(self, request: CreateSoloGameRequest) -> GameState:
         resolved_human_side = self._resolve_human_side(request.human_side)
@@ -47,6 +53,7 @@ class GameService:
             )
             game = self._normalize_setup_turn(game)
             game = self._advance_bot_turns(game)
+        self._touch_game(game)
         self._games[game.game_id] = game
         return game
 
@@ -75,15 +82,18 @@ class GameService:
             )
             game = self._advance_bot_turns(game)
 
+        self._touch_game(game)
         self._games[game.game_id] = game
         return game
 
     def get_game(self, game_id: str) -> GameState:
+        self._cleanup_games()
         try:
             game = self._games[game_id]
             normalized = self._normalize_setup_turn(game)
             if normalized is not game:
                 self._games[game_id] = normalized
+            self._touch_game(normalized)
             return normalized
         except KeyError as exc:
             raise KeyError(f"Game {game_id} does not exist.") from exc
@@ -101,15 +111,18 @@ class GameService:
         updated = self._normalize_setup_turn(updated)
         updated = self._advance_bot_turns(updated)
         updated = self._finalize_post_setup_or_failure(updated)
+        self._touch_game(updated)
 
         self._games[game_id] = updated
         return updated
 
     def stats(self) -> dict[str, int]:
+        self._cleanup_games()
         active_games = sum(1 for game in self._games.values() if self._is_active_game(game))
         return {
             "active_games": active_games,
             "active_players": active_games,
+            "total_battles_played": self._total_battles_played,
         }
 
     def _advance_bot_turns(self, game: GameState) -> GameState:
@@ -126,17 +139,20 @@ class GameService:
             game.autoplay = self._engine_provider.generate_autoplay(game)
             game.phase = Phase.AUTOPLAY
             game.result = game.autoplay.result
-            game.event_log.append("Autoplay replay generated from the finished setup.")
+            game.event_log.append("Battle simulation generated from the finished setup.")
+            if game.autoplay.status is AutoplayStatus.READY:
+                self._total_battles_played += 1
         return game
 
     def _finalize_post_setup_or_failure(self, game: GameState) -> GameState:
         try:
             return self._finalize_post_setup(game)
-        except EngineError as exc:
+        except EXPECTED_ENGINE_FAILURES as exc:
+            error_message = format_engine_failure(exc)
             game.phase = Phase.AUTOPLAY
-            game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=str(exc))
+            game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=error_message)
             game.result = None
-            game.event_log.append(f"Autoplay replay generation failed: {exc}")
+            game.event_log.append(f"Battle simulation generation failed: {error_message}")
             return game
 
     def _resolve_human_side(self, choice: HumanSideChoice) -> Side:
@@ -150,6 +166,7 @@ class GameService:
         if game.phase is not Phase.SETUP:
             return game
 
+        self._rules_engine.auto_finish_unspendable_sides(game)
         current_player = game.player(game.setup_turn)
         opposing_side = game.setup_turn.opposite
         opposing_player = game.player(opposing_side)
@@ -172,11 +189,34 @@ class GameService:
     def _is_active_game(self, game: GameState) -> bool:
         if game.mode is GameMode.MULTIPLAYER:
             return False
-        if game.phase is Phase.RESULTS:
-            return False
-        if game.phase is Phase.AUTOPLAY and game.autoplay.status in {AutoplayStatus.READY, AutoplayStatus.FAILED}:
-            return False
         return True
+
+    def _touch_game(self, game: GameState) -> None:
+        game.updated_at = utc_now()
+
+    def _cleanup_games(self) -> None:
+        now = utc_now()
+        expired_game_ids = [
+            game_id
+            for game_id, game in self._games.items()
+            if self._should_cleanup_game(game, now)
+        ]
+        for game_id in expired_game_ids:
+            del self._games[game_id]
+
+    def _should_cleanup_game(self, game: GameState, now: datetime) -> bool:
+        idle_for = now - game.updated_at
+        if self._is_terminal_game(game):
+            return idle_for > self.TERMINAL_GAME_CLEANUP_TIMEOUT
+        return idle_for > self.ACTIVE_GAME_IDLE_TIMEOUT
+
+    def _is_terminal_game(self, game: GameState) -> bool:
+        if game.phase is Phase.RESULTS:
+            return True
+        return game.phase is Phase.AUTOPLAY and game.autoplay.status in {
+            AutoplayStatus.READY,
+            AutoplayStatus.FAILED,
+        }
 
 
 service = GameService()

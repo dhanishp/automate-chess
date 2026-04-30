@@ -4,7 +4,7 @@
 
 Browser-based Automate-style chess for the Handshake Codex Challenge.
 
-Players build custom chess formations with a points budget, place kings last, and then watch Stockfish autoplay the resulting position into a replay.
+Players build custom chess formations with a points budget, place kings last, and then watch Stockfish play out the resulting battle simulation.
 
 ## Current Features
 
@@ -13,8 +13,8 @@ Players build custom chess formations with a points budget, place kings last, an
 - Public/private room-code multiplayer over WebSockets, with invite links and Open Games
 - Server-authoritative setup legality and multiplayer turn order
 - Visible alternating setup phase with legal placement highlights
-- Stockfish-backed autoplay/replay
-- Replay controls with pause, step, speed, restart, skip, move list, and copyable replay notation
+- Stockfish-backed battle simulation
+- Battle controls with pause, step, speed, restart, skip, move list, and copyable battle notation
 - SVG pieces for consistent browser rendering
 - Sample setup preset
 - Light/dark theme
@@ -67,7 +67,7 @@ Useful local IP commands:
 
 ## Stockfish
 
-Autoplay requires Stockfish.
+Battle simulation requires Stockfish.
 
 For local dev, install Stockfish and set `STOCKFISH_PATH` if it is not in a common path:
 
@@ -89,14 +89,14 @@ The Docker image installs Stockfish with apt and sets:
 STOCKFISH_PATH=/usr/games/stockfish
 ```
 
-If Stockfish is missing or fails, solo/local/bot games store a clean failed autoplay state instead of a half-complete replay. Multiplayer stores and broadcasts a shared `failed` autoplay state so both clients can return to menu.
+If Stockfish is missing or fails, solo/local/bot games store a clean failed battle state instead of a half-complete simulation. Multiplayer stores and broadcasts a shared `failed` battle state so both clients can return to menu.
 
 The backend exposes two deployment checks:
 
 - `/health`: lightweight process health for Render.
 - `/ready`: app readiness plus a lightweight Stockfish launch/ping check. It returns `ready` when Stockfish is available and `degraded` when the app is up but the engine is unavailable.
 
-The backend also performs the same lightweight Stockfish check on startup. On free Render instances, wake the app and check `/ready` before a demo so the first real autoplay is not the first time the engine is touched.
+The backend also performs the same lightweight Stockfish check on startup. On free Render instances, wake the app and check `/ready` before a demo so the first real battle simulation is not the first time the engine is touched.
 
 ## Render Deployment
 
@@ -199,6 +199,6 @@ npm run build
 - Rooms disappear on server restart or redeploy.
 - No accounts/auth.
 - Open Games is a lightweight list of public waiting rooms, not a persistent matchmaking queue.
-- Replay data is shared in multiplayer, but replay controls are local per client.
+- Battle data is shared in multiplayer, but playback controls are local per client.
 - Free hosting may sleep and cold start.
 - If a Render deploy restarts the service, active rooms are lost.

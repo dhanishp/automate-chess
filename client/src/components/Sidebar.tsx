@@ -48,6 +48,13 @@ function formatSide(side: Side): string {
 }
 
 function formatPhase(phase: GameState['phase']): string {
+  if (phase === 'ready_for_autoplay') {
+    return 'Battle Ready'
+  }
+  if (phase === 'autoplay') {
+    return 'Battle'
+  }
+
   return phase
     .split('_')
     .map((part) => part[0].toUpperCase() + part.slice(1))
@@ -199,10 +206,11 @@ export function Sidebar({
     enabled: canInteract && canPlacePieceTypeNow(game, piece),
   }))
   const noLegalBuysRemain =
-    canFinishSetup &&
-    pieceOptions
-      .filter((option) => option.piece !== 'K')
-      .every((option) => !option.enabled)
+    canFinishSetup && !(['P', 'N', 'B', 'R', 'Q'] as PieceType[]).some((piece) => canPlacePieceTypeNow(game, piece))
+  const autoLockedBuyHint =
+    canPlaceKing && activePlayer.finished_spending && activePlayer.points_remaining > 0
+      ? 'No legal buys remain. Place your king to start the battle.'
+      : null
   const finishSetupLabel =
     isMultiplayer && roomStatus === 'waiting'
       ? 'Waiting for opponent'
@@ -353,7 +361,7 @@ export function Sidebar({
             </button>
             {canFinishSetup ? (
               <p className="hint-message compact-hint">
-                {noLegalBuysRemain ? 'No legal buys remain. Lock the budget to place the king.' : 'Lock this side\'s budget. King placement comes next.'}
+                {noLegalBuysRemain ? 'No legal buys remain. Place your king to start the battle.' : 'Lock this side\'s budget. King placement comes next.'}
               </p>
             ) : null}
             <button
@@ -367,7 +375,7 @@ export function Sidebar({
           </>
         ) : (
           <>
-            <p className="hint-message">Setup is locked. Replay state is read-only.</p>
+            <p className="hint-message">Setup is locked. Battle state is read-only.</p>
           </>
         )}
 
@@ -397,30 +405,32 @@ export function Sidebar({
           <>
             <div className="requirement-list">
               <div className="requirement-row">
-                <span>Pawns placed</span>
+                <span>Minimum pawns placed</span>
                 <strong>{activePlayer.pieces.filter((piece) => piece.type === 'P').length}/{game.rules.mandatory_pawns}</strong>
               </div>
               <div className="requirement-row">
-                <span>Can finish</span>
-                <strong className={canFinishSetup ? 'ok' : 'blocked'}>{canFinishSetup ? 'Yes' : 'No'}</strong>
+                <span>Budget/setup state</span>
+                <strong className={activePlayer.finished_spending ? 'ok' : canFinishSetup ? 'ok' : 'blocked'}>
+                  {activePlayer.finished_spending ? 'Locked' : canFinishSetup ? 'Can lock' : 'Build'}
+                </strong>
               </div>
               <div className="requirement-row">
-                <span>Can place king</span>
-                <strong className={canPlaceKing ? 'ok' : 'blocked'}>{canPlaceKing ? 'Yes' : 'No'}</strong>
-              </div>
-              <div className="requirement-row">
-                <span>Budget locked</span>
-                <strong className={activePlayer.finished_spending ? 'ok' : 'blocked'}>{activePlayer.finished_spending ? 'Yes' : 'No'}</strong>
-              </div>
-              <div className="requirement-row">
-                <span>King</span>
-                <strong>{activePlayer.king_square ?? 'Not yet'}</strong>
+                <span>King state</span>
+                <strong className={activePlayer.king_square || canPlaceKing ? 'ok' : 'blocked'}>
+                  {activePlayer.king_square ?? (canPlaceKing ? 'Ready' : 'Locked')}
+                </strong>
               </div>
             </div>
 
-            {sharedRequirementReason ? <p className="hint-message">{sharedRequirementReason}</p> : null}
-            {kingPlacementReason ? <p className="hint-message">{kingPlacementReason}</p> : null}
-            {finishSetupReason ? <p className="hint-message">{finishSetupReason}</p> : null}
+            <p className="hint-message">
+              {sharedRequirementReason ??
+                autoLockedBuyHint ??
+                (canPlaceKing
+                  ? 'Place your king to start the battle.'
+                  : canFinishSetup
+                    ? 'Finish setup to unlock king placement.'
+                    : kingPlacementReason ?? finishSetupReason ?? 'Build your formation, then place the king last.')}
+            </p>
           </>
         ) : (
           <div className="requirement-list">
@@ -438,7 +448,7 @@ export function Sidebar({
             </div>
             <div className="requirement-row">
               <span>Next stage</span>
-              <strong>Calculating soon</strong>
+              <strong>Battle simulation</strong>
             </div>
           </div>
         )}

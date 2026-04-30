@@ -1,5 +1,6 @@
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 from pathlib import Path
@@ -10,7 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.game.bot import BotMoveError
-from app.game.engine import EngineError, EngineUnavailableError, LocalStockfishProvider, StockfishReadiness
+from app.game.engine import (
+    EXPECTED_ENGINE_FAILURES,
+    EngineError,
+    EngineUnavailableError,
+    LocalStockfishProvider,
+    StockfishReadiness,
+    format_engine_failure,
+)
 from app.game.models import (
     ActionRequest,
     ApiResponse,
@@ -35,6 +43,9 @@ from app.game.service import service
 room_service = RoomService()
 stockfish_provider = LocalStockfishProvider()
 last_stockfish_readiness: StockfishReadiness | None = None
+last_stockfish_warmup: StockfishReadiness | None = None
+last_stockfish_warmup_at: datetime | None = None
+STOCKFISH_WARMUP_CACHE_TTL = timedelta(minutes=5)
 CLIENT_DIST_DIR = Path(__file__).resolve().parents[2] / "client" / "dist"
 logger = logging.getLogger(__name__)
 
@@ -51,18 +62,52 @@ def compose_ready_response(stockfish: StockfishReadiness) -> dict[str, object]:
     }
 
 
+def compose_warmup_response(stockfish: StockfishReadiness, cached: bool) -> dict[str, object]:
+    response = compose_ready_response(stockfish)
+    response["warmup"] = {
+        "complete": stockfish.available,
+        "cached": cached,
+        "cache_ttl_seconds": int(STOCKFISH_WARMUP_CACHE_TTL.total_seconds()),
+    }
+    return response
+
+
 def check_stockfish_readiness() -> StockfishReadiness:
     global last_stockfish_readiness
     last_stockfish_readiness = stockfish_provider.check_readiness()
     return last_stockfish_readiness
 
 
-def warm_stockfish_on_startup() -> None:
-    readiness = check_stockfish_readiness()
+def warmup_stockfish_engine(use_cache: bool = True) -> tuple[StockfishReadiness, bool]:
+    global last_stockfish_readiness, last_stockfish_warmup, last_stockfish_warmup_at
+
+    now = datetime.now(timezone.utc)
+    if (
+        use_cache
+        and last_stockfish_warmup is not None
+        and last_stockfish_warmup.available
+        and last_stockfish_warmup_at is not None
+        and now - last_stockfish_warmup_at < STOCKFISH_WARMUP_CACHE_TTL
+    ):
+        return last_stockfish_warmup, True
+
+    readiness = stockfish_provider.warmup_search()
+    last_stockfish_readiness = readiness
     if readiness.available:
-        logger.info("Stockfish readiness check passed at %s", readiness.path)
+        last_stockfish_warmup = readiness
+        last_stockfish_warmup_at = now
+    else:
+        last_stockfish_warmup = None
+        last_stockfish_warmup_at = None
+    return readiness, False
+
+
+def warm_stockfish_on_startup() -> None:
+    readiness, cached = warmup_stockfish_engine(use_cache=False)
+    if readiness.available:
+        logger.info("Stockfish warmup search passed at %s%s", readiness.path, " from cache" if cached else "")
         return
-    logger.warning("Stockfish readiness check degraded: %s", readiness.message)
+    logger.warning("Stockfish warmup check degraded: %s", readiness.message)
 
 
 @asynccontextmanager
@@ -127,6 +172,12 @@ def ready() -> dict[str, object]:
     return compose_ready_response(check_stockfish_readiness())
 
 
+@app.post("/warmup")
+def warmup() -> dict[str, object]:
+    readiness, cached = warmup_stockfish_engine()
+    return compose_warmup_response(readiness, cached)
+
+
 def compose_stats(room_stats: dict[str, int], solo_stats: dict[str, int]) -> dict[str, int]:
     active_players = room_stats["players_online"] + solo_stats["active_players"]
     occupied_players = room_stats["occupied_players"] + solo_stats["active_players"]
@@ -135,6 +186,7 @@ def compose_stats(room_stats: dict[str, int], solo_stats: dict[str, int]) -> dic
         "active_players": active_players,
         "players_online": room_stats["players_online"],
         "occupied_players": occupied_players,
+        "total_battles_played": room_stats["total_battles_played"] + solo_stats["total_battles_played"],
     }
 
 
@@ -167,13 +219,22 @@ async def get_game(game_id: str) -> ApiResponse:
     return ApiResponse(game=game)
 
 
-@app.delete("/games/{game_id}")
-def abandon_game(game_id: str) -> dict[str, str]:
+def abandon_game_by_id(game_id: str) -> dict[str, str]:
     try:
         service.abandon_game(game_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "abandoned"}
+
+
+@app.delete("/games/{game_id}")
+def abandon_game(game_id: str) -> dict[str, str]:
+    return abandon_game_by_id(game_id)
+
+
+@app.post("/games/{game_id}/abandon")
+def abandon_game_keepalive(game_id: str) -> dict[str, str]:
+    return abandon_game_by_id(game_id)
 
 
 @app.post("/games/{game_id}/actions", response_model=ApiResponse)
@@ -189,7 +250,9 @@ async def apply_action(game_id: str, request: ActionRequest) -> ApiResponse:
     except EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EngineError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EXPECTED_ENGINE_FAILURES as exc:
+        raise HTTPException(status_code=503, detail=format_engine_failure(exc)) from exc
     return ApiResponse(message="Action applied.", game=game)
 
 
@@ -242,7 +305,9 @@ async def apply_room_action(room_code: str, request: RoomActionRequest) -> RoomR
     except EngineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EngineError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EXPECTED_ENGINE_FAILURES as exc:
+        raise HTTPException(status_code=503, detail=format_engine_failure(exc)) from exc
 
     await room_hub.broadcast_snapshot(room)
 

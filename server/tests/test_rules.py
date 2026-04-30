@@ -157,13 +157,36 @@ def test_finish_setup_allowed_when_no_legal_affordable_placements_remain() -> No
         PlacedPiece(type=PieceType.PAWN if square[1] == "2" else PieceType.KNIGHT, square=square)
         for square in occupied_white_setup_squares
     ]
-    game.white.points_remaining = 1
+    game.white.points_remaining = 2
 
     assert game.white.mandatory_pawn_count >= game.rules.mandatory_pawns
     assert engine.has_legal_affordable_non_king_placement(game, Side.WHITE) is False
 
     engine.apply_action(game, ActionRequest(action_type=ActionType.FINISH_SETUP, side=Side.WHITE))
 
+    assert game.white.finished_spending is True
+
+
+def test_setup_auto_finishes_after_last_legal_affordable_buy() -> None:
+    game = build_game()
+    occupied_white_setup_squares = [
+        "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1",
+        "a2", "b2", "c2", "d2", "e2", "g2", "h2",
+        "a3", "b3", "c3", "d3", "e3", "f3", "g3", "h3",
+    ]
+    game.white.pieces = [
+        PlacedPiece(type=PieceType.PAWN if square in {"a2", "b2", "c2", "d2", "e2"} else PieceType.KNIGHT, square=square)
+        for square in occupied_white_setup_squares
+    ]
+    game.white.points_remaining = 2
+
+    engine.apply_action(
+        game,
+        ActionRequest(action_type=ActionType.PLACE_PIECE, side=Side.WHITE, piece_type=PieceType.PAWN, square="f2"),
+    )
+
+    assert game.white.mandatory_pawn_count == game.rules.mandatory_pawns
+    assert game.white.points_remaining == 1
     assert game.white.finished_spending is True
 
 

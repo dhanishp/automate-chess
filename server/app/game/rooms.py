@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import random
 from typing import Dict
 from uuid import uuid4
 
-from app.game.engine import EngineError, EngineProvider, LocalStockfishProvider
+from app.game.engine import EXPECTED_ENGINE_FAILURES, EngineProvider, LocalStockfishProvider, format_engine_failure
 from app.game.models import (
     AutoplayState,
     AutoplayStatus,
@@ -24,6 +25,7 @@ from app.game.models import (
     RoomStatus,
     RoomVisibility,
     Side,
+    utc_now,
 )
 from app.game.rules import AutomateRulesEngine
 
@@ -48,13 +50,19 @@ class RoomNotReadyError(ValueError):
 
 
 class RoomService:
+    WAITING_ROOM_IDLE_TIMEOUT = timedelta(minutes=30)
+    NO_CONNECTED_PLAYERS_TIMEOUT = timedelta(minutes=10)
+    TERMINAL_ROOM_CLEANUP_TIMEOUT = timedelta(minutes=60)
+
     def __init__(self, engine_provider: EngineProvider | None = None, rng: random.Random | None = None) -> None:
         self._rooms: Dict[str, RoomState] = {}
         self._rules_engine = AutomateRulesEngine()
         self._engine_provider = engine_provider or LocalStockfishProvider()
         self._rng = rng or random.Random()
+        self._total_battles_played = 0
 
     def create_room(self, request: CreateRoomRequest) -> RoomResponse:
+        self._cleanup_rooms()
         room_code = self._generate_room_code()
         player_token = uuid4().hex
         game = GameState(mode=GameMode.MULTIPLAYER)
@@ -72,6 +80,7 @@ class RoomService:
         return self.room_response("Room created.", room, player_token, Side.WHITE)
 
     def join_room(self, request: JoinRoomRequest) -> RoomResponse:
+        self._cleanup_rooms()
         room = self._get_room(request.room_code)
         if room.black_player is not None:
             raise RoomJoinError(f"Room {request.room_code} is already full.")
@@ -84,6 +93,7 @@ class RoomService:
         return self.room_response("Joined room.", room, player_token, Side.BLACK)
 
     def get_room(self, room_code: str, player_token: str) -> RoomResponse:
+        self._cleanup_rooms()
         room = self._get_room(room_code)
         player_side = self._side_for_token(room, player_token)
         self._normalize_setup_turn(room.game)
@@ -91,6 +101,7 @@ class RoomService:
         return self.room_response(None, room, player_token, player_side)
 
     def stats(self) -> dict[str, int]:
+        self._cleanup_rooms()
         players_online = 0
         occupied_players = 0
         active_games = 0
@@ -112,9 +123,11 @@ class RoomService:
             "active_games": active_games,
             "players_online": players_online,
             "occupied_players": occupied_players,
+            "total_battles_played": self._total_battles_played,
         }
 
     def open_rooms(self) -> list[OpenRoomSummary]:
+        self._cleanup_rooms()
         return [
             OpenRoomSummary(
                 room_code=room.room_code,
@@ -137,6 +150,7 @@ class RoomService:
         return None, side
 
     def mark_connected(self, room_code: str, player_token: str, connected: bool) -> RoomState:
+        self._cleanup_rooms()
         room = self._get_room(room_code)
         side = self._side_for_token(room, player_token)
         player = room.white_player if side is Side.WHITE else room.black_player
@@ -150,6 +164,7 @@ class RoomService:
         return room
 
     def apply_action(self, room_code: str, request: RoomActionRequest, finalize_autoplay: bool = True) -> RoomState:
+        self._cleanup_rooms()
         room = self._get_room(room_code)
         side = self._side_for_token(room, request.player_token)
         if request.action.side is not side:
@@ -169,6 +184,7 @@ class RoomService:
         return room
 
     def begin_autoplay(self, room_code: str) -> RoomState:
+        self._cleanup_rooms()
         room = self._get_room(room_code)
         if room.game.phase is Phase.READY_FOR_AUTOPLAY:
             room.game.autoplay = AutoplayState(
@@ -176,12 +192,13 @@ class RoomService:
                 error=None,
             )
             room.game.phase = Phase.AUTOPLAY
-            room.game.event_log.append("Autoplay replay generation started.")
+            room.game.event_log.append("Battle simulation generation started.")
             self._update_room_status(room)
             self._touch_room(room)
         return room
 
     def finalize_autoplay(self, room_code: str) -> RoomState:
+        self._cleanup_rooms()
         room = self._get_room(room_code)
         room.game = self._finalize_post_setup_or_failure(room.game)
         self._update_room_status(room)
@@ -264,47 +281,81 @@ class RoomService:
             game.autoplay = self._engine_provider.generate_autoplay(game)
             game.phase = Phase.AUTOPLAY
             game.result = game.autoplay.result
-            game.event_log.append("Autoplay replay generated from the finished setup.")
+            game.event_log.append("Battle simulation generated from the finished setup.")
+            if game.autoplay.status is AutoplayStatus.READY:
+                self._total_battles_played += 1
         return game
 
     def _finalize_post_setup_or_failure(self, game: GameState) -> GameState:
         try:
             return self._finalize_post_setup(game)
-        except EngineError as exc:
-            return self._mark_autoplay_failed(game, str(exc))
+        except EXPECTED_ENGINE_FAILURES as exc:
+            return self._mark_autoplay_failed(game, format_engine_failure(exc))
 
     def _mark_autoplay_failed(self, game: GameState, error: str) -> GameState:
         game.phase = Phase.AUTOPLAY
         game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=error)
         game.result = None
-        game.event_log.append(f"Autoplay replay generation failed: {error}")
+        game.event_log.append(f"Battle simulation generation failed: {error}")
         return game
 
     def _touch_room(self, room: RoomState) -> None:
         room.version += 1
+        now = utc_now()
+        room.updated_at = now
+        room.last_activity_at = now
+        room.game.updated_at = now
 
     def _is_public_room_joinable(self, room: RoomState) -> bool:
         return (
             room.visibility is RoomVisibility.PUBLIC
             and room.status is RoomStatus.WAITING
+            and room.white_player.connected
             and room.black_player is None
             and room.game.phase is Phase.SETUP
         )
 
     def _is_active_room(self, room: RoomState) -> bool:
-        if room.game.phase is Phase.RESULTS:
-            return False
-        if room.game.phase is Phase.AUTOPLAY and room.game.autoplay.status in {
-            AutoplayStatus.READY,
-            AutoplayStatus.FAILED,
-        }:
+        if not self._has_connected_player(room):
             return False
         return True
+
+    def _cleanup_rooms(self) -> None:
+        now = utc_now()
+        expired_room_codes = [
+            room_code
+            for room_code, room in self._rooms.items()
+            if self._should_cleanup_room(room, now)
+        ]
+        for room_code in expired_room_codes:
+            del self._rooms[room_code]
+
+    def _should_cleanup_room(self, room: RoomState, now: datetime) -> bool:
+        idle_for = now - room.last_activity_at
+        if self._is_terminal_room(room):
+            return idle_for > self.TERMINAL_ROOM_CLEANUP_TIMEOUT
+        if not self._has_connected_player(room):
+            return idle_for > self.NO_CONNECTED_PLAYERS_TIMEOUT
+        if room.status is RoomStatus.WAITING:
+            return idle_for > self.WAITING_ROOM_IDLE_TIMEOUT
+        return False
+
+    def _is_terminal_room(self, room: RoomState) -> bool:
+        if room.game.phase is Phase.RESULTS:
+            return True
+        return room.game.phase is Phase.AUTOPLAY and room.game.autoplay.status in {
+            AutoplayStatus.READY,
+            AutoplayStatus.FAILED,
+        }
+
+    def _has_connected_player(self, room: RoomState) -> bool:
+        return room.white_player.connected or bool(room.black_player and room.black_player.connected)
 
     def _normalize_setup_turn(self, game: GameState) -> GameState:
         if game.phase is not Phase.SETUP:
             return game
 
+        self._rules_engine.auto_finish_unspendable_sides(game)
         current_player = game.player(game.setup_turn)
         opposing_side = game.setup_turn.opposite
         opposing_player = game.player(opposing_side)

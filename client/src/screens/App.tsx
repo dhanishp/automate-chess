@@ -7,6 +7,7 @@ import { Sidebar } from '../components/Sidebar'
 import {
   ApiError,
   abandonGame,
+  abandonGameOnUnload,
   applyAction,
   applyRoomAction,
   createRoom,
@@ -14,12 +15,12 @@ import {
   createSoloGame,
   getGame,
   getOpenRooms,
-  getReadiness,
   getRoom,
   getStats,
   getWebSocketUrl,
   joinRoom,
   leaveRoom,
+  warmupEngine,
   type GameMode,
   type GameState,
   type HumanSideChoice,
@@ -57,6 +58,7 @@ interface BootstrapState {
   game: GameState | null
   room: RoomState | null
   roomSession: RoomSession | null
+  message: string | null
 }
 
 let bootstrapPromise: Promise<BootstrapState> | null = null
@@ -95,9 +97,18 @@ function getInitialGame(): Promise<BootstrapState> {
             game: response.room.game,
             room: response.room,
             roomSession: storedRoomSession,
+            message: null,
           }
-        } catch {
+        } catch (error) {
           window.sessionStorage.removeItem(ROOM_SESSION_STORAGE_KEY)
+          if (error instanceof ApiError && error.status === 404) {
+            return {
+              game: null,
+              room: null,
+              roomSession: null,
+              message: 'This room was closed or expired due to inactivity. Return to the menu to start again.',
+            }
+          }
         }
       }
 
@@ -106,12 +117,20 @@ function getInitialGame(): Promise<BootstrapState> {
       if (existingGameId) {
         try {
           const response = await getGame(existingGameId)
-          return { game: response.game, room: null, roomSession: null }
-        } catch {
+          return { game: response.game, room: null, roomSession: null, message: null }
+        } catch (error) {
           window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+          if (error instanceof ApiError && error.status === 404) {
+            return {
+              game: null,
+              room: null,
+              roomSession: null,
+              message: 'Saved game expired after a server restart or idle cleanup. Start a new battle from the menu.',
+            }
+          }
         }
       }
-      return { game: null, room: null, roomSession: null }
+      return { game: null, room: null, roomSession: null, message: null }
     })().finally(() => {
       bootstrapPromise = null
     })
@@ -147,17 +166,32 @@ function buildBoard(game: GameState): BoardSquareData[] {
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    return error.message
+    return sanitizeErrorMessage(error.message)
   }
 
   if (error instanceof Error) {
-    return error.message
+    return sanitizeErrorMessage(error.message)
   }
 
   return 'Something went wrong while talking to the backend.'
 }
 
+function sanitizeErrorMessage(message: string): string {
+  if (/body is disturbed|body.*locked|already read/i.test(message)) {
+    return 'The server response could not be read. Try again in a moment.'
+  }
+
+  return message
+}
+
 function formatPhaseLabel(phase: GameState['phase']): string {
+  if (phase === 'ready_for_autoplay') {
+    return 'Battle Ready'
+  }
+  if (phase === 'autoplay') {
+    return 'Battle'
+  }
+
   return phase
     .split('_')
     .map((part) => part[0].toUpperCase() + part.slice(1))
@@ -357,7 +391,7 @@ function getActivePlayerStatus(game: GameState) {
   if (activePlayer.finished_spending) {
     finishSetupReason = 'This side already finished spending.'
   } else if (!hasMinimumPawns) {
-    sharedRequirementReason = `Place ${mandatoryPawnsRemaining} more pawn${mandatoryPawnsRemaining === 1 ? '' : 's'} before finishing setup or placing your king.`
+    sharedRequirementReason = `Place at least ${game.rules.mandatory_pawns} pawns before finishing setup or placing your king.`
   }
 
   let kingPlacementReason: string | null = null
@@ -409,14 +443,18 @@ export function App() {
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
   const [serverStats, setServerStats] = useState<StatsResponse | null>(null)
   const [readiness, setReadiness] = useState<ReadyResponse | null>(null)
+  const [engineCheckLoading, setEngineCheckLoading] = useState(false)
   const [openRooms, setOpenRooms] = useState<OpenRoomSummary[]>([])
   const [openRoomsLoading, setOpenRoomsLoading] = useState(false)
   const [openRoomsError, setOpenRoomsError] = useState<string | null>(null)
   const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
   const [replayFinished, setReplayFinished] = useState(false)
   const actionInFlightRef = useRef(false)
+  const gameRef = useRef<GameState | null>(null)
+  const roomSessionRef = useRef<RoomSession | null>(null)
   const roomStateRef = useRef<RoomState | null>(null)
   const roomVersionRef = useRef<number>(0)
+  const roomConnectedOnceRef = useRef(false)
   const syncRoomStateRef = useRef<(() => Promise<boolean>) | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const heartbeatIntervalRef = useRef<number | null>(null)
@@ -425,6 +463,15 @@ export function App() {
   const inviteCopiedTimeoutRef = useRef<number | null>(null)
   const inviteRoomCodeRef = useRef<string | null>(null)
   const autoJoinAttemptedRef = useRef(false)
+  const enginePreflightReady = readiness?.status === 'ready'
+
+  useEffect(() => {
+    gameRef.current = game
+  }, [game])
+
+  useEffect(() => {
+    roomSessionRef.current = roomSession
+  }, [roomSession])
 
   useEffect(() => {
     roomStateRef.current = roomState
@@ -454,7 +501,7 @@ export function App() {
 
   useEffect(() => {
     const inviteRoomCode = inviteRoomCodeRef.current
-    if (!inviteRoomCode || autoJoinAttemptedRef.current || loadingMessage || game || roomSession) {
+    if (!inviteRoomCode || autoJoinAttemptedRef.current || loadingMessage || game || roomSession || !enginePreflightReady) {
       return
     }
 
@@ -462,7 +509,7 @@ export function App() {
     setGameSetupMode('multiplayer')
     setJoinRoomCode(inviteRoomCode)
     void handleJoinRoom(inviteRoomCode)
-  }, [game, loadingMessage, roomSession])
+  }, [enginePreflightReady, game, loadingMessage, roomSession])
 
   useEffect(() => {
     let cancelled = false
@@ -475,7 +522,8 @@ export function App() {
           setGame(initialState.game)
           setRoomState(initialState.room)
           setRoomSession(initialState.roomSession)
-          setErrorMessage(null)
+          setRoomConnectionState(initialState.roomSession ? 'connecting' : 'disconnected')
+          setErrorMessage(initialState.message)
           setLoadingMessage('')
         }
       } catch (error) {
@@ -494,10 +542,6 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (game) {
-      return
-    }
-
     let cancelled = false
     let intervalId: number | null = null
 
@@ -525,10 +569,27 @@ export function App() {
         window.clearInterval(intervalId)
       }
     }
-  }, [game])
+  }, [])
 
   useEffect(() => {
-    if (game || readiness?.status === 'ready') {
+    const handlePageHide = () => {
+      const activeGame = gameRef.current
+      if (!activeGame || activeGame.mode === 'multiplayer' || roomSessionRef.current) {
+        return
+      }
+
+      abandonGameOnUnload(activeGame.game_id)
+    }
+
+    window.addEventListener('pagehide', handlePageHide)
+
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (readiness?.status === 'ready') {
       return
     }
 
@@ -536,8 +597,9 @@ export function App() {
     let intervalId: number | null = null
 
     async function refreshReadiness() {
+      setEngineCheckLoading(true)
       try {
-        const response = await getReadiness()
+        const response = await warmupEngine()
         if (!cancelled) {
           setReadiness(response)
         }
@@ -545,13 +607,17 @@ export function App() {
         if (!cancelled) {
           setReadiness(null)
         }
+      } finally {
+        if (!cancelled) {
+          setEngineCheckLoading(false)
+        }
       }
     }
 
     void refreshReadiness()
     intervalId = window.setInterval(() => {
       void refreshReadiness()
-    }, 12000)
+    }, 8000)
 
     return () => {
       cancelled = true
@@ -559,7 +625,7 @@ export function App() {
         window.clearInterval(intervalId)
       }
     }
-  }, [game, readiness?.status])
+  }, [readiness?.status])
 
   useEffect(() => {
     if (game) {
@@ -684,12 +750,15 @@ export function App() {
   useEffect(() => {
     if (!roomSession) {
       setRoomConnectionState('disconnected')
+      roomConnectedOnceRef.current = false
       syncRoomStateRef.current = null
       return
     }
 
     let active = true
     let socket: WebSocket | null = null
+    roomConnectedOnceRef.current = false
+    setRoomConnectionState('connecting')
 
     const clearTimers = () => {
       if (reconnectTimeoutRef.current !== null) {
@@ -747,7 +816,11 @@ export function App() {
         return true
       } catch (error) {
         if (active) {
-          resetToLauncher(error instanceof ApiError && error.status === 404 ? formatRoomClosedMessage(null) : getErrorMessage(error))
+          resetToLauncher(
+            error instanceof ApiError && error.status === 404
+              ? 'This room was closed or expired due to inactivity. Return to the main menu to start again.'
+              : getErrorMessage(error),
+          )
         }
         return false
       }
@@ -786,6 +859,7 @@ export function App() {
         if (!active || !socket) {
           return
         }
+        roomConnectedOnceRef.current = true
         setRoomConnectionState('connected')
         heartbeatIntervalRef.current = window.setInterval(() => {
           if (socket?.readyState === WebSocket.OPEN) {
@@ -820,12 +894,12 @@ export function App() {
         }
       }
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         clearTimers()
         if (!active) {
           return
         }
-        setRoomConnectionState('disconnected')
+        setRoomConnectionState(event.code === 4404 || (roomConnectedOnceRef.current && !navigator.onLine) ? 'disconnected' : 'connecting')
         reconnectTimeoutRef.current = window.setTimeout(() => {
           void (async () => {
             const synced = await syncRoomState()
@@ -956,6 +1030,11 @@ export function App() {
   }
 
   async function startNewGame(mode: GameMode = 'local', sideChoice: HumanSideChoice = 'white') {
+    if (!enginePreflightReady) {
+      setErrorMessage('Chess engine is still warming up. Start options unlock when the battle engine is ready.')
+      return
+    }
+
     const previousGameId = !roomSession ? game?.game_id : null
 
     actionInFlightRef.current = false
@@ -964,7 +1043,7 @@ export function App() {
     setRoomSession(null)
     setRoomConnectionState('disconnected')
     window.sessionStorage.removeItem(ROOM_SESSION_STORAGE_KEY)
-    setLoadingMessage(mode === 'bot' ? 'Starting singleplayer bot match...' : 'Starting sandbox...')
+    setLoadingMessage(mode === 'bot' ? 'Starting singleplayer bot battle...' : 'Starting sandbox...')
     setPendingActionLabel(null)
     setErrorMessage(null)
     setIsKingPlacementMode(false)
@@ -1006,6 +1085,11 @@ export function App() {
   }
 
   async function handleCreateRoom() {
+    if (!enginePreflightReady) {
+      setErrorMessage('Chess engine is still warming up. Room creation unlocks when the battle engine is ready.')
+      return
+    }
+
     actionInFlightRef.current = false
     window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
     setLoadingMessage('Creating room...')
@@ -1033,6 +1117,7 @@ export function App() {
       }
       setStoredRoomSession(session)
       window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+      setRoomConnectionState('connecting')
       setRoomSession(session)
       setRoomState(response.room)
       setGame(response.room.game)
@@ -1044,6 +1129,11 @@ export function App() {
   }
 
   async function handleJoinRoom(roomCodeOverride?: string) {
+    if (!enginePreflightReady) {
+      setErrorMessage('Chess engine is still warming up. Joining unlocks when the battle engine is ready.')
+      return
+    }
+
     const normalizedRoomCode = (roomCodeOverride ?? joinRoomCode).trim().toUpperCase()
     if (!normalizedRoomCode) {
       setErrorMessage('Enter a room code.')
@@ -1078,6 +1168,7 @@ export function App() {
       }
       setStoredRoomSession(session)
       window.sessionStorage.removeItem(SESSION_STORAGE_GAME_KEY)
+      setRoomConnectionState('connecting')
       setRoomSession(session)
       setRoomState(response.room)
       setGame(response.room.game)
@@ -1093,6 +1184,8 @@ export function App() {
       setErrorMessage('Sample setup is not available in multiplayer rooms.')
       return
     }
+
+    const previousGameId = game?.game_id ?? null
 
     actionInFlightRef.current = false
     setLoadingMessage('Loading sample...')
@@ -1112,6 +1205,14 @@ export function App() {
     setReplayFinished(false)
 
     try {
+      if (previousGameId) {
+        try {
+          await abandonGame(previousGameId)
+        } catch {
+          // Best-effort cleanup; a missing old game should not block the sample.
+        }
+      }
+
       const response = await createSampleGame({
         mode: game?.mode ?? 'local',
         human_side: game?.human_side ?? humanSideChoice,
@@ -1123,6 +1224,41 @@ export function App() {
       setErrorMessage(getErrorMessage(error))
     } finally {
       setPendingActionLabel(null)
+    }
+  }
+
+  async function refetchLatestGameStateAfterAction(): Promise<GameState | null> {
+    if (!game) {
+      return null
+    }
+
+    if (isMultiplayer && roomSession && roomState) {
+      try {
+        const response = await getRoom(roomSession.roomCode, roomSession.playerToken)
+        setRoomState(response.room)
+        setGame(response.room.game)
+        return response.room.game
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          resetToLauncher('This room was closed or expired due to inactivity. Return to the main menu to start again.')
+          return null
+        }
+
+        throw error
+      }
+    }
+
+    try {
+      const response = await getGame(game.game_id)
+      setGame(response.game)
+      return response.game
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        resetToLauncher('Saved game expired after a server restart or idle cleanup. Start a new battle from the menu.')
+        return null
+      }
+
+      throw error
     }
   }
 
@@ -1171,11 +1307,27 @@ export function App() {
             : applyAction(game.game_id, payload)
         )
         setGame(response.game)
+        if (payload.action_type === 'place_king') {
+          await refetchLatestGameStateAfterAction()
+        }
       }
       setIsKingPlacementMode(false)
     } catch (error) {
-      setAutoplayTransitionLatched(false)
-      setErrorMessage(getErrorMessage(error))
+      const actionError = getErrorMessage(error)
+      try {
+        const latest = await refetchLatestGameStateAfterAction()
+        if (latest && shouldLatchCalculatingOverlay(latest)) {
+          setAutoplayTransitionLatched(true)
+        } else if (latest && isAutoplayTerminal(latest)) {
+          setAutoplayTransitionLatched(false)
+        } else {
+          setAutoplayTransitionLatched(false)
+          setErrorMessage(actionError)
+        }
+      } catch (refreshError) {
+        setAutoplayTransitionLatched(false)
+        setErrorMessage(`${actionError} Refresh failed: ${getErrorMessage(refreshError)}`)
+      }
     } finally {
       setPendingActionLabel(null)
       setIsCalculatingAutoplay(false)
@@ -1367,25 +1519,30 @@ export function App() {
   }
 
   const boardSquares = useMemo(() => (game ? buildBoard(game) : []), [game])
+  const liveStatusPill = serverStats
+    ? `Live now: ${serverStats.active_games} game${serverStats.active_games === 1 ? '' : 's'} · ${serverStats.active_players} player${serverStats.active_players === 1 ? '' : 's'}`
+    : undefined
+  const totalBattlesPill = serverStats ? `Total battles played: ${serverStats.total_battles_played}` : undefined
+  const hasLiveActivity = Boolean(serverStats && (serverStats.active_games > 0 || serverStats.active_players > 0))
+  const activityPillClassName = `activity-pill${hasLiveActivity ? ' activity-pill-live' : ''}`
+  const activityTone: HeaderTone = hasLiveActivity ? 'connected' : 'disconnected'
+  const engineStatusPill =
+    readiness?.status === 'ready'
+      ? 'Chess engine active'
+      : readiness?.status === 'degraded'
+        ? 'Chess engine unavailable'
+        : engineCheckLoading
+          ? 'Chess engine warming up...'
+          : 'Chess engine warming up...'
+  const engineStatusTone: HeaderTone =
+    readiness?.status === 'ready'
+      ? 'connected'
+      : readiness?.status === 'degraded'
+        ? 'disconnected'
+        : 'connecting'
 
   if (!game) {
     const isBootstrapping = Boolean(loadingMessage)
-    const launcherStatusPill = serverStats
-      ? `Live now: ${serverStats.active_games} game${serverStats.active_games === 1 ? '' : 's'} · ${serverStats.active_players} player${serverStats.active_players === 1 ? '' : 's'}`
-      : undefined
-    const hasLiveActivity = Boolean(serverStats && (serverStats.active_games > 0 || serverStats.active_players > 0))
-    const engineStatusPill =
-      readiness?.status === 'ready'
-        ? 'Engine ready'
-        : readiness?.status === 'degraded'
-          ? 'Engine unavailable'
-          : 'Engine waking up...'
-    const engineStatusTone: HeaderTone =
-      readiness?.status === 'ready'
-        ? 'connected'
-        : readiness?.status === 'degraded'
-          ? 'disconnected'
-          : 'connecting'
     const roomVisibilityDescription =
       roomVisibility === 'public'
         ? 'Visible in Open Games until someone joins.'
@@ -1395,11 +1552,15 @@ export function App() {
     return (
       <div className="shell loading-shell">
         <AppHeader
-          primaryPill={launcherStatusPill}
-          primaryPillClassName={`activity-pill ${hasLiveActivity ? 'activity-pill-live' : ''}`}
-          secondaryPill={engineStatusPill}
-          secondaryPillClassName="system-pill"
-          secondaryTone={engineStatusTone}
+          primaryPill={engineStatusPill}
+          primaryPillClassName="system-pill"
+          primaryTone={engineStatusTone}
+          secondaryPill={liveStatusPill}
+          secondaryPillClassName={activityPillClassName}
+          secondaryTone={activityTone}
+          tertiaryPill={totalBattlesPill}
+          tertiaryPillClassName="activity-pill total-battles-pill"
+          tertiaryTone="setup"
           tone="setup"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -1521,6 +1682,7 @@ export function App() {
                         <button
                           type="button"
                           className="button primary compact-action"
+                          disabled={!enginePreflightReady}
                           onClick={() => {
                             void handleCreateRoom()
                           }}
@@ -1538,6 +1700,7 @@ export function App() {
                         <button
                           type="button"
                           className="button ghost compact-action"
+                          disabled={!enginePreflightReady}
                           onClick={() => {
                             void handleJoinRoom()
                           }}
@@ -1554,6 +1717,7 @@ export function App() {
                   <button
                     type="button"
                     className="button primary launcher-start-button"
+                    disabled={!enginePreflightReady}
                     onClick={() => {
                       void startNewGame(gameSetupMode, humanSideChoice)
                     }}
@@ -1600,6 +1764,7 @@ export function App() {
                             <button
                               type="button"
                               className="button primary small open-game-join"
+                              disabled={!enginePreflightReady}
                               onClick={() => {
                                 void handleJoinRoom(openRoom.room_code)
                               }}
@@ -1673,7 +1838,7 @@ export function App() {
       (isMultiplayer ? sharedCalculatingState : isCalculatingAutoplay || sharedCalculatingState)
     )
   const headerTone = getHeaderTone(game)
-  const headerSecondaryPill = isMultiplayer && roomState
+  const roomConnectionPill = isMultiplayer && roomState
     ? `Room ${roomState.room_code} · ${roomConnectionState}`
     : undefined
   const roomConnectionTone = getRoomConnectionTone(roomConnectionState)
@@ -1732,8 +1897,15 @@ export function App() {
     return (
       <div className="shell">
         <AppHeader
-          secondaryPill={headerSecondaryPill}
-          secondaryTone={roomConnectionTone}
+          primaryPill={engineStatusPill}
+          primaryPillClassName="system-pill"
+          primaryTone={engineStatusTone}
+          secondaryPill={liveStatusPill}
+          secondaryPillClassName={activityPillClassName}
+          secondaryTone={activityTone}
+          tertiaryPill={roomConnectionPill}
+          tertiaryPillClassName="room-pill"
+          tertiaryTone={roomConnectionTone}
           tone={replayFinished ? 'complete' : 'autoplay'}
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -1764,8 +1936,15 @@ export function App() {
     return (
       <div className="shell">
         <AppHeader
-          secondaryPill={headerSecondaryPill}
-          secondaryTone={roomConnectionTone}
+          primaryPill={engineStatusPill}
+          primaryPillClassName="system-pill"
+          primaryTone={engineStatusTone}
+          secondaryPill={liveStatusPill}
+          secondaryPillClassName={activityPillClassName}
+          secondaryTone={activityTone}
+          tertiaryPill={roomConnectionPill}
+          tertiaryPillClassName="room-pill"
+          tertiaryTone={roomConnectionTone}
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -1777,8 +1956,8 @@ export function App() {
             <div className="board-stage">
               <div className="stage-heading">
                 <div>
-                  <p className="eyebrow">Engine Transition</p>
-                  <h2>Calculating autoplay...</h2>
+                  <p className="eyebrow">Battle Engine</p>
+                  <h2>Calculating battle...</h2>
                 </div>
               </div>
 
@@ -1789,7 +1968,7 @@ export function App() {
                     interactive={false}
                     disabledAppearance={false}
                     selectedSquare={null}
-                    selectedModeLabel="Final setup position"
+                    selectedModeLabel="Final battle setup"
                     squares={boardSquares}
                     onSquareClick={() => {}}
                   />
@@ -1802,8 +1981,8 @@ export function App() {
                       </div>
                       <div>
                         <p className="eyebrow">Engine is preparing</p>
-                        <h3>Calculating autoplay...</h3>
-                        <p>The setup is locked. Stockfish is generating the shared replay.</p>
+                        <h3>Calculating battle...</h3>
+                        <p>The setup is locked. Stockfish is generating the shared battle simulation.</p>
                       </div>
                     </section>
                   </div>
@@ -1823,14 +2002,14 @@ export function App() {
 
               <div className="status-line">
                 <span className="live-dot tone-autoplay on" />
-                <strong>Generating shared replay</strong>
+                <strong>Generating battle simulation</strong>
                 <span className="status-chip tone-autoplay">Working</span>
               </div>
 
               <div className="status-metrics">
                 <div className="metric-card emphasis">
                   <span>Phase</span>
-                  <strong>Autoplay</strong>
+                  <strong>Battle</strong>
                 </div>
                 <div className="metric-card">
                   <span>Status</span>
@@ -1859,21 +2038,28 @@ export function App() {
   if (autoplayPhase) {
     const autoplayHeadline =
       game.autoplay.status === 'failed'
-        ? 'Autoplay generation failed'
+        ? 'Battle generation failed'
         : game.autoplay.status === 'running'
-          ? 'Generating autoplay replay'
-          : 'Autoplay replay pending'
+          ? 'Generating battle simulation'
+          : 'Battle simulation pending'
     const autoplayMessage =
       game.autoplay.error ??
       (game.autoplay.status === 'running'
-        ? 'Stockfish is generating the replay from the finished setup.'
-        : 'The setup is locked. Replay data is not ready yet.')
+        ? 'Stockfish is simulating the battle from the finished setup.'
+        : 'The setup is locked. Battle data is not ready yet.')
 
     return (
       <div className="shell">
         <AppHeader
-          secondaryPill={headerSecondaryPill}
-          secondaryTone={roomConnectionTone}
+          primaryPill={engineStatusPill}
+          primaryPillClassName="system-pill"
+          primaryTone={engineStatusTone}
+          secondaryPill={liveStatusPill}
+          secondaryPillClassName={activityPillClassName}
+          secondaryTone={activityTone}
+          tertiaryPill={roomConnectionPill}
+          tertiaryPillClassName="room-pill"
+          tertiaryTone={roomConnectionTone}
           tone="autoplay"
           theme={theme}
           onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -1885,7 +2071,7 @@ export function App() {
             <div className="board-stage">
               <div className="stage-heading">
                 <div>
-                  <p className="eyebrow">Replay Status</p>
+                  <p className="eyebrow">Battle Status</p>
                   <h2>{autoplayHeadline}</h2>
                 </div>
               </div>
@@ -1915,7 +2101,7 @@ export function App() {
                           void refreshGame()
                         }}
                       >
-                        Refresh replay state
+                        Refresh battle state
                       </button>
                       {game.autoplay.status === 'failed' ? (
                         <button
@@ -1941,8 +2127,15 @@ export function App() {
   return (
     <div className="shell">
       <AppHeader
-        secondaryPill={headerSecondaryPill}
-        secondaryTone={roomConnectionTone}
+        primaryPill={engineStatusPill}
+        primaryPillClassName="system-pill"
+        primaryTone={engineStatusTone}
+        secondaryPill={liveStatusPill}
+        secondaryPillClassName={activityPillClassName}
+        secondaryTone={activityTone}
+        tertiaryPill={roomConnectionPill}
+        tertiaryPillClassName="room-pill"
+        tertiaryTone={roomConnectionTone}
         tone={headerTone}
         theme={theme}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
@@ -1963,8 +2156,8 @@ export function App() {
               <section className="panel premium-card transition-card">
                 <div>
                   <p className="eyebrow">Next Stage</p>
-                  <h3>Ready for autoplay</h3>
-                  <p>Both kings are placed. Stockfish will resolve this position into a replay.</p>
+                  <h3>Battle ready</h3>
+                  <p>Both kings are placed. Stockfish will resolve this position into a battle simulation.</p>
                 </div>
               </section>
             ) : null}
