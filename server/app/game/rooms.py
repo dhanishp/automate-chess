@@ -195,12 +195,7 @@ class RoomService:
         self._cleanup_rooms()
         room = self._get_room(room_code)
         if room.game.phase is Phase.READY_FOR_AUTOPLAY:
-            room.game.autoplay = AutoplayState(
-                status=AutoplayStatus.RUNNING,
-                error=None,
-            )
-            room.game.phase = Phase.AUTOPLAY
-            room.game.event_log.append("Battle simulation generation started.")
+            room.game = self._begin_autoplay_if_ready(room.game)
             self._update_room_status(room)
             self._touch_room(room)
         return room
@@ -213,7 +208,7 @@ class RoomService:
         self._touch_room(room)
         return room
 
-    def retry_battle(self, room_code: str, player_token: str) -> tuple[RoomState, Side]:
+    def retry_battle(self, room_code: str, player_token: str, finalize_autoplay: bool = True) -> tuple[RoomState, Side]:
         self._cleanup_rooms()
         room = self._get_room(room_code)
         side = self._side_for_token(room, player_token)
@@ -223,10 +218,54 @@ class RoomService:
         room.game.autoplay = AutoplayState(status=AutoplayStatus.NOT_READY)
         room.game.result = None
         room.game.event_log.append("Retrying battle simulation from the finished setup.")
-        room.game = self._finalize_post_setup_or_failure(room.game)
+        room.game = (
+            self._finalize_post_setup_or_failure(room.game)
+            if finalize_autoplay
+            else self._begin_autoplay_if_ready(room.game)
+        )
         self._update_room_status(room)
         self._touch_room(room)
         return room, side
+
+    def battle_generation_snapshot(self, room_code: str) -> GameState:
+        self._cleanup_rooms()
+        room = self._get_room(room_code)
+        if not self._is_battle_generation_in_progress(room.game):
+            raise RoomNotReadyError("Battle generation is not pending for this room.")
+        return room.game.model_copy(deep=True)
+
+    def generate_autoplay_for_snapshot(self, game: GameState) -> AutoplayState:
+        return self._engine_provider.generate_autoplay(game.model_copy(deep=True))
+
+    def complete_battle_generation(self, room_code: str, autoplay: AutoplayState) -> RoomState | None:
+        room = self._rooms.get(self._normalize_room_code(room_code))
+        if room is None or not self._is_battle_generation_in_progress(room.game):
+            return room
+
+        room.game.phase = Phase.AUTOPLAY
+        room.game.autoplay = autoplay
+        room.game.result = autoplay.result
+        room.game.event_log.append("Battle simulation generated from the finished setup.")
+        if autoplay.status is AutoplayStatus.READY:
+            self._total_battles_played += 1
+        self._update_room_status(room)
+        self._touch_room(room)
+        return room
+
+    def fail_battle_generation(self, room_code: str, exc: BaseException) -> RoomState | None:
+        room = self._rooms.get(self._normalize_room_code(room_code))
+        if room is None or not self._is_battle_generation_in_progress(room.game):
+            return room
+
+        logger.warning(
+            "Multiplayer battle simulation generation failed (%s): %s",
+            exc.__class__.__name__,
+            format_engine_failure(exc),
+        )
+        room.game = self._mark_autoplay_failed(room.game, format_engine_failure(exc))
+        self._update_room_status(room)
+        self._touch_room(room)
+        return room
 
     def public_room(self, room: RoomState) -> RoomSnapshot:
         return RoomSnapshot(
@@ -309,6 +348,17 @@ class RoomService:
                 self._total_battles_played += 1
         return game
 
+    def _begin_autoplay_if_ready(self, game: GameState) -> GameState:
+        if game.phase is Phase.READY_FOR_AUTOPLAY:
+            game.autoplay = AutoplayState(
+                status=AutoplayStatus.RUNNING,
+                error=None,
+            )
+            game.phase = Phase.AUTOPLAY
+            game.result = None
+            game.event_log.append("Battle simulation generation started.")
+        return game
+
     def _finalize_post_setup_or_failure(self, game: GameState) -> GameState:
         try:
             return self._finalize_post_setup(game)
@@ -332,6 +382,12 @@ class RoomService:
             raise RoomNotReadyError("Cannot retry battle before both kings are placed.")
         if game.phase is not Phase.AUTOPLAY or game.autoplay.status is not AutoplayStatus.FAILED:
             raise RoomNotReadyError("Battle retry is only available after failed battle generation.")
+
+    def _is_battle_generation_in_progress(self, game: GameState) -> bool:
+        return game.phase is Phase.AUTOPLAY and game.autoplay.status in {
+            AutoplayStatus.PENDING,
+            AutoplayStatus.RUNNING,
+        }
 
     def _touch_room(self, room: RoomState) -> None:
         room.version += 1

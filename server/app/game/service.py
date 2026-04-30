@@ -118,19 +118,22 @@ class GameService:
         except KeyError as exc:
             raise KeyError(f"Game {game_id} does not exist.") from exc
 
-    def apply_action(self, game_id: str, action: ActionRequest) -> GameState:
+    def apply_action(self, game_id: str, action: ActionRequest, finalize_autoplay: bool = True) -> GameState:
         game = self.get_game(game_id)
         working_copy = game.model_copy(deep=True)
         updated = self._rules_engine.apply_action(working_copy, action)
         updated = self._normalize_setup_turn(updated)
-        updated = self._advance_bot_turns(updated)
-        updated = self._finalize_post_setup_or_failure(updated)
+        updated = self._advance_bot_turns(updated, finalize_autoplay=finalize_autoplay)
+        if finalize_autoplay:
+            updated = self._finalize_post_setup_or_failure(updated)
+        else:
+            updated = self._begin_autoplay_if_ready(updated)
         self._touch_game(updated)
 
         self._games[game_id] = updated
         return updated
 
-    def retry_battle(self, game_id: str) -> GameState:
+    def retry_battle(self, game_id: str, finalize_autoplay: bool = True) -> GameState:
         game = self.get_game(game_id)
         self._validate_retryable_battle(game)
 
@@ -140,10 +143,51 @@ class GameService:
         working_copy.result = None
         working_copy.event_log.append("Retrying battle simulation from the finished setup.")
 
-        updated = self._finalize_post_setup_or_failure(working_copy)
+        updated = (
+            self._finalize_post_setup_or_failure(working_copy)
+            if finalize_autoplay
+            else self._begin_autoplay_if_ready(working_copy)
+        )
         self._touch_game(updated)
         self._games[game_id] = updated
         return updated
+
+    def battle_generation_snapshot(self, game_id: str) -> GameState:
+        game = self.get_game(game_id)
+        if not self._is_battle_generation_in_progress(game):
+            raise BattleRetryError("Battle generation is not pending for this game.")
+        return game.model_copy(deep=True)
+
+    def generate_autoplay_for_snapshot(self, game: GameState) -> AutoplayState:
+        return self._engine_provider.generate_autoplay(game.model_copy(deep=True))
+
+    def complete_battle_generation(self, game_id: str, autoplay: AutoplayState) -> GameState | None:
+        game = self._games.get(game_id)
+        if game is None or not self._is_battle_generation_in_progress(game):
+            return game
+
+        game.phase = Phase.AUTOPLAY
+        game.autoplay = autoplay
+        game.result = autoplay.result
+        game.event_log.append("Battle simulation generated from the finished setup.")
+        if autoplay.status is AutoplayStatus.READY:
+            self._total_battles_played += 1
+        self._touch_game(game)
+        return game
+
+    def fail_battle_generation(self, game_id: str, exc: BaseException) -> GameState | None:
+        game = self._games.get(game_id)
+        if game is None or not self._is_battle_generation_in_progress(game):
+            return game
+
+        error_message = format_engine_failure(exc)
+        logger.warning("Battle simulation generation failed (%s): %s", exc.__class__.__name__, error_message)
+        game.phase = Phase.AUTOPLAY
+        game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=ENGINE_FAILURE_USER_MESSAGE)
+        game.result = None
+        game.event_log.append(f"Battle simulation generation failed: {ENGINE_FAILURE_USER_MESSAGE}")
+        self._touch_game(game)
+        return game
 
     def stats(self) -> dict[str, int]:
         self._cleanup_games()
@@ -154,14 +198,22 @@ class GameService:
             "total_battles_played": self._total_battles_played,
         }
 
-    def _advance_bot_turns(self, game: GameState) -> GameState:
+    def _advance_bot_turns(self, game: GameState, finalize_autoplay: bool = True) -> GameState:
         game = self._normalize_setup_turn(game)
         while game.mode is GameMode.BOT and game.bot_side is not None and game.phase is Phase.SETUP and game.setup_turn is game.bot_side:
             action = self._setup_bot.choose_action(game)
             game.event_log.append(f"{game.bot_side.value} bot selected {action.action_type.value}")
             game = self._rules_engine.apply_action(game, action)
             game = self._normalize_setup_turn(game)
-        return self._finalize_post_setup_or_failure(game)
+        return self._finalize_post_setup_or_failure(game) if finalize_autoplay else self._begin_autoplay_if_ready(game)
+
+    def _begin_autoplay_if_ready(self, game: GameState) -> GameState:
+        if game.phase == Phase.READY_FOR_AUTOPLAY:
+            game.phase = Phase.AUTOPLAY
+            game.autoplay = AutoplayState(status=AutoplayStatus.RUNNING, error=None)
+            game.result = None
+            game.event_log.append("Battle simulation generation started.")
+        return game
 
     def _finalize_post_setup(self, game: GameState) -> GameState:
         if game.phase == Phase.READY_FOR_AUTOPLAY:
@@ -190,6 +242,12 @@ class GameService:
             raise BattleRetryError("Cannot retry battle before both kings are placed.")
         if game.phase is not Phase.AUTOPLAY or game.autoplay.status is not AutoplayStatus.FAILED:
             raise BattleRetryError("Battle retry is only available after failed battle generation.")
+
+    def _is_battle_generation_in_progress(self, game: GameState) -> bool:
+        return game.phase is Phase.AUTOPLAY and game.autoplay.status in {
+            AutoplayStatus.PENDING,
+            AutoplayStatus.RUNNING,
+        }
 
     def _resolve_human_side(self, choice: HumanSideChoice) -> Side:
         if choice is HumanSideChoice.WHITE:

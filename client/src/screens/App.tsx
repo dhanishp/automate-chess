@@ -7,7 +7,6 @@ import { Sidebar } from '../components/Sidebar'
 import {
   ApiError,
   abandonGame,
-  abandonGameOnUnload,
   applyAction,
   applyRoomAction,
   createRoom,
@@ -454,8 +453,6 @@ export function App() {
   const [theme, setTheme] = useState<AppTheme>(() => getPreferredTheme())
   const [replayFinished, setReplayFinished] = useState(false)
   const actionInFlightRef = useRef(false)
-  const gameRef = useRef<GameState | null>(null)
-  const roomSessionRef = useRef<RoomSession | null>(null)
   const roomStateRef = useRef<RoomState | null>(null)
   const roomVersionRef = useRef<number>(0)
   const roomConnectedOnceRef = useRef(false)
@@ -468,14 +465,6 @@ export function App() {
   const inviteRoomCodeRef = useRef<string | null>(null)
   const autoJoinAttemptedRef = useRef(false)
   const enginePreflightReady = readiness?.status === 'ready'
-
-  useEffect(() => {
-    gameRef.current = game
-  }, [game])
-
-  useEffect(() => {
-    roomSessionRef.current = roomSession
-  }, [roomSession])
 
   useEffect(() => {
     roomStateRef.current = roomState
@@ -572,23 +561,6 @@ export function App() {
       if (intervalId !== null) {
         window.clearInterval(intervalId)
       }
-    }
-  }, [])
-
-  useEffect(() => {
-    const handlePageHide = () => {
-      const activeGame = gameRef.current
-      if (!activeGame || activeGame.mode === 'multiplayer' || roomSessionRef.current) {
-        return
-      }
-
-      abandonGameOnUnload(activeGame.game_id)
-    }
-
-    window.addEventListener('pagehide', handlePageHide)
-
-    return () => {
-      window.removeEventListener('pagehide', handlePageHide)
     }
   }, [])
 
@@ -937,6 +909,51 @@ export function App() {
       socket?.close()
     }
   }, [roomSession])
+
+  useEffect(() => {
+    if (!game || game.mode === 'multiplayer' || !shouldLatchCalculatingOverlay(game)) {
+      return
+    }
+
+    let active = true
+    let intervalId: number | null = null
+    const gameId = game.game_id
+
+    const syncBattleState = async () => {
+      try {
+        const response = await getGame(gameId)
+        if (!active) {
+          return
+        }
+        setGame(response.game)
+        if (isAutoplayTerminal(response.game)) {
+          setAutoplayTransitionLatched(false)
+        } else if (shouldLatchCalculatingOverlay(response.game)) {
+          setAutoplayTransitionLatched(true)
+        }
+      } catch (error) {
+        if (!active) {
+          return
+        }
+        if (error instanceof ApiError && error.status === 404) {
+          resetToLauncher('Saved game expired after a server restart or idle cleanup. Start a new battle from the menu.')
+          return
+        }
+        setErrorMessage(getErrorMessage(error))
+      }
+    }
+
+    intervalId = window.setInterval(() => {
+      void syncBattleState()
+    }, 2000)
+
+    return () => {
+      active = false
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+    }
+  }, [game?.game_id, game?.mode, game?.phase, game?.autoplay.status])
 
   const isBotGame = game?.mode === 'bot'
   const isMultiplayer = game?.mode === 'multiplayer' && !!roomState && !!roomSession

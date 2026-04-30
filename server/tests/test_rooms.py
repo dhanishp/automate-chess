@@ -1,5 +1,7 @@
 import asyncio
 from datetime import timedelta
+import threading
+import time
 
 import chess.engine
 
@@ -72,6 +74,30 @@ class SequencedEngineProvider:
         outcome = self.outcomes.pop(0)
         if outcome == "terminated":
             raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+        return AutoplayState(
+            status=AutoplayStatus.READY,
+            initial_fen="initial-fen",
+            moves=[ReplayMove(ply=1, uci="g1f3", san="Nf3", fen_after="fen-after-1")],
+            final_fen="final-fen",
+            result="1-0",
+        )
+
+
+class BlockingEngineProvider:
+    def __init__(self, fail_first: bool = False) -> None:
+        self.fail_first = fail_first
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate_autoplay(self, game):  # noqa: ANN001
+        self.calls += 1
+        if self.fail_first and self.calls == 1:
+            raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+
+        self.started.set()
+        if not self.release.wait(2):
+            raise TimeoutError("Blocking test engine was not released.")
         return AutoplayState(
             status=AutoplayStatus.READY,
             initial_fen="initial-fen",
@@ -317,9 +343,10 @@ def test_multiplayer_retry_battle_succeeds_from_failed_state() -> None:
 
 
 def test_multiplayer_retry_endpoint_broadcasts_updated_state(monkeypatch) -> None:  # noqa: ANN001
-    engine_provider = SequencedEngineProvider(["terminated", "ready"])
+    engine_provider = BlockingEngineProvider(fail_first=True)
     patched_service = RoomService(engine_provider=engine_provider)
     monkeypatch.setattr(main_module, "room_service", patched_service)
+    main_module.room_battle_tasks.clear()
 
     class FakeHub:
         def __init__(self) -> None:
@@ -342,16 +369,74 @@ def test_multiplayer_retry_endpoint_broadcasts_updated_state(monkeypatch) -> Non
             RoomActionRequest(player_token=token, action=action),
         )
 
-    response = asyncio.run(
-        main_module.retry_room_battle(
+    async def scenario() -> None:
+        response = await main_module.retry_room_battle(
             created.room.room_code,
             LeaveRoomRequest(player_token=created.player_token),
         )
-    )
 
-    assert response.room.game.autoplay.status == "ready"
-    assert fake_hub.snapshots[-1].game.autoplay.status == "ready"
-    assert patched_service.stats()["total_battles_played"] == 1
+        assert response.room.game.autoplay.status == "running"
+        assert fake_hub.snapshots[-1].game.autoplay.status == "running"
+        assert await asyncio.to_thread(engine_provider.started.wait, 1)
+        task = main_module.room_battle_tasks[created.room.room_code]
+        engine_provider.release.set()
+        await asyncio.wait_for(task, timeout=2)
+        assert fake_hub.snapshots[-1].game.autoplay.status == "ready"
+        assert patched_service.stats()["total_battles_played"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_multiplayer_action_endpoint_returns_before_background_battle_finishes(monkeypatch) -> None:  # noqa: ANN001
+    engine_provider = BlockingEngineProvider()
+    patched_service = RoomService(engine_provider=engine_provider)
+    monkeypatch.setattr(main_module, "room_service", patched_service)
+    main_module.room_battle_tasks.clear()
+
+    class FakeHub:
+        def __init__(self) -> None:
+            self.snapshots = []
+
+        async def broadcast_snapshot(self, room):  # noqa: ANN001
+            self.snapshots.append(room)
+
+    fake_hub = FakeHub()
+    monkeypatch.setattr(main_module, "room_hub", fake_hub)
+    created = patched_service.create_room(CreateRoomRequest())
+    joined = patched_service.join_room(JoinRoomRequest(room_code=created.room.room_code))
+
+    actions = _build_ready_sequence()
+    for action in actions[:-1]:
+        token = created.player_token if action.side == "white" else joined.player_token
+        patched_service.apply_action(
+            created.room.room_code,
+            RoomActionRequest(player_token=token, action=action),
+        )
+
+    async def scenario() -> None:
+        started_at = time.monotonic()
+        response = await main_module.apply_room_action(
+            created.room.room_code,
+            RoomActionRequest(player_token=joined.player_token, action=actions[-1]),
+        )
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 0.5
+        assert response.room.game.black.king_square == "g8"
+        assert response.room.game.phase == "autoplay"
+        assert response.room.game.autoplay.status == "running"
+        assert fake_hub.snapshots[-1].game.autoplay.status == "running"
+        assert await asyncio.to_thread(engine_provider.started.wait, 1)
+        assert patched_service.stats()["total_battles_played"] == 0
+        assert main_module.schedule_room_battle_generation(created.room.room_code) is False
+
+        task = main_module.room_battle_tasks[created.room.room_code]
+        engine_provider.release.set()
+        await asyncio.wait_for(task, timeout=2)
+        assert fake_hub.snapshots[-1].game.autoplay.status == "ready"
+        assert patched_service.stats()["total_battles_played"] == 1
+
+    asyncio.run(scenario())
 
 
 def test_room_snapshots_only_include_current_player_token_at_top_level() -> None:

@@ -1,5 +1,7 @@
 import asyncio
 from datetime import timedelta
+import threading
+import time
 
 import chess.engine
 
@@ -83,6 +85,33 @@ class SequencedEngineProvider:
         outcome = self.outcomes.pop(0)
         if outcome == "terminated":
             raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+        return AutoplayState(
+            status=AutoplayStatus.READY,
+            initial_fen="initial-fen",
+            moves=[ReplayMove(ply=1, uci="g1f3", san="Nf3", fen_after="fen-after-1")],
+            final_fen="final-fen",
+            result="1-0",
+        )
+
+
+class BlockingEngineProvider:
+    def __init__(self, fail_first: bool = False, fail_after_release: bool = False) -> None:
+        self.fail_first = fail_first
+        self.fail_after_release = fail_after_release
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate_autoplay(self, game):  # noqa: ANN001
+        self.calls += 1
+        if self.fail_first and self.calls == 1:
+            raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+
+        self.started.set()
+        if not self.release.wait(2):
+            raise TimeoutError("Blocking test engine was not released.")
+        if self.fail_after_release:
+            raise EngineUnavailableError("Stockfish missing after background start.")
         return AutoplayState(
             status=AutoplayStatus.READY,
             initial_fen="initial-fen",
@@ -380,18 +409,92 @@ def test_retry_battle_rejects_non_failed_battle() -> None:
 
 
 def test_retry_battle_endpoint_returns_updated_game(monkeypatch) -> None:  # noqa: ANN001
-    engine_provider = SequencedEngineProvider(["terminated", "ready"])
+    engine_provider = BlockingEngineProvider(fail_first=True)
     patched_service = GameService(engine_provider=engine_provider)
     monkeypatch.setattr(main_module, "service", patched_service)
+    main_module.game_battle_tasks.clear()
     game = patched_service.create_solo_game(CreateSoloGameRequest())
 
     for action in _build_ready_sequence():
         game = patched_service.apply_action(game.game_id, action)
 
-    response = asyncio.run(main_module.retry_game_battle(game.game_id))
+    async def scenario() -> None:
+        response = await main_module.retry_game_battle(game.game_id)
 
-    assert response.game.autoplay.status == AutoplayStatus.READY
-    assert patched_service.stats()["total_battles_played"] == 1
+        assert response.game.autoplay.status == AutoplayStatus.RUNNING
+        assert await asyncio.to_thread(engine_provider.started.wait, 1)
+        assert patched_service.stats()["total_battles_played"] == 0
+        task = main_module.game_battle_tasks[game.game_id]
+        engine_provider.release.set()
+        await asyncio.wait_for(task, timeout=2)
+        assert patched_service.get_game(game.game_id).autoplay.status == AutoplayStatus.READY
+        assert patched_service.stats()["total_battles_played"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_apply_action_endpoint_returns_before_background_battle_finishes(monkeypatch) -> None:  # noqa: ANN001
+    engine_provider = BlockingEngineProvider()
+    patched_service = GameService(engine_provider=engine_provider)
+    monkeypatch.setattr(main_module, "service", patched_service)
+    main_module.game_battle_tasks.clear()
+    game = patched_service.create_solo_game(CreateSoloGameRequest())
+    actions = _build_ready_sequence()
+
+    for action in actions[:-1]:
+        game = patched_service.apply_action(game.game_id, action)
+
+    async def scenario() -> None:
+        started_at = time.monotonic()
+        response = await main_module.apply_action(game.game_id, actions[-1])
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 0.5
+        assert response.game.black.king_square == "g8"
+        assert response.game.phase == Phase.AUTOPLAY
+        assert response.game.autoplay.status == AutoplayStatus.RUNNING
+        assert await asyncio.to_thread(engine_provider.started.wait, 1)
+        assert patched_service.get_game(game.game_id).autoplay.status == AutoplayStatus.RUNNING
+        assert patched_service.stats()["total_battles_played"] == 0
+        assert main_module.stats()["active_games"] >= 1
+
+        assert main_module.schedule_game_battle_generation(game.game_id) is False
+        task = main_module.game_battle_tasks[game.game_id]
+        engine_provider.release.set()
+        await asyncio.wait_for(task, timeout=2)
+        completed = patched_service.get_game(game.game_id)
+        assert completed.autoplay.status == AutoplayStatus.READY
+        assert patched_service.stats()["total_battles_played"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_background_battle_failure_updates_failed_state(monkeypatch) -> None:  # noqa: ANN001
+    engine_provider = BlockingEngineProvider(fail_after_release=True)
+    patched_service = GameService(engine_provider=engine_provider)
+    monkeypatch.setattr(main_module, "service", patched_service)
+    main_module.game_battle_tasks.clear()
+    game = patched_service.create_solo_game(CreateSoloGameRequest())
+    actions = _build_ready_sequence()
+
+    for action in actions[:-1]:
+        game = patched_service.apply_action(game.game_id, action)
+
+    async def scenario() -> None:
+        response = await main_module.apply_action(game.game_id, actions[-1])
+
+        assert response.game.autoplay.status == AutoplayStatus.RUNNING
+        assert await asyncio.to_thread(engine_provider.started.wait, 1)
+        task = main_module.game_battle_tasks[game.game_id]
+        engine_provider.release.set()
+        await asyncio.wait_for(task, timeout=2)
+        failed = patched_service.get_game(game.game_id)
+        assert failed.autoplay.status == AutoplayStatus.FAILED
+        assert failed.autoplay.error == ENGINE_FAILURE_USER_MESSAGE
+        assert failed.black.king_square == "g8"
+        assert patched_service.stats()["total_battles_played"] == 0
+
+    asyncio.run(scenario())
 
 
 def test_idle_solo_game_expires_from_stats() -> None:

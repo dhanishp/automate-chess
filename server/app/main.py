@@ -1,6 +1,7 @@
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from app.game.engine import (
 from app.game.models import (
     ActionRequest,
     ApiResponse,
+    AutoplayStatus,
     CreateRoomRequest,
     CreateSampleGameRequest,
     CreateSoloGameRequest,
@@ -147,6 +149,94 @@ class RoomHub:
 
 
 room_hub = RoomHub()
+game_battle_tasks: dict[str, asyncio.Task[None]] = {}
+room_battle_tasks: dict[str, asyncio.Task[None]] = {}
+
+
+def battle_generation_running(phase: Phase, status: AutoplayStatus) -> bool:
+    return phase is Phase.AUTOPLAY and status in {
+        AutoplayStatus.PENDING,
+        AutoplayStatus.RUNNING,
+    }
+
+
+def schedule_game_battle_generation(game_id: str) -> bool:
+    existing = game_battle_tasks.get(game_id)
+    if existing is not None and not existing.done():
+        return False
+
+    task = asyncio.create_task(run_game_battle_generation(game_id))
+    game_battle_tasks[game_id] = task
+    task.add_done_callback(lambda completed: finish_game_battle_task(game_id, completed))
+    return True
+
+
+def finish_game_battle_task(game_id: str, task: asyncio.Task[None]) -> None:
+    if game_battle_tasks.get(game_id) is task:
+        del game_battle_tasks[game_id]
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logger.info("Background battle task for game %s was cancelled.", game_id)
+    except Exception:
+        logger.exception("Background battle task for game %s crashed unexpectedly.", game_id)
+
+
+async def run_game_battle_generation(game_id: str) -> None:
+    try:
+        snapshot = service.battle_generation_snapshot(game_id)
+    except (KeyError, BattleRetryError) as exc:
+        logger.info("Skipping battle generation for game %s: %s", game_id, exc)
+        return
+
+    try:
+        autoplay = await asyncio.to_thread(service.generate_autoplay_for_snapshot, snapshot)
+    except Exception as exc:
+        service.fail_battle_generation(game_id, exc)
+        return
+
+    service.complete_battle_generation(game_id, autoplay)
+
+
+def schedule_room_battle_generation(room_code: str) -> bool:
+    normalized_room_code = room_code.strip().upper()
+    existing = room_battle_tasks.get(normalized_room_code)
+    if existing is not None and not existing.done():
+        return False
+
+    task = asyncio.create_task(run_room_battle_generation(normalized_room_code))
+    room_battle_tasks[normalized_room_code] = task
+    task.add_done_callback(lambda completed: finish_room_battle_task(normalized_room_code, completed))
+    return True
+
+
+def finish_room_battle_task(room_code: str, task: asyncio.Task[None]) -> None:
+    if room_battle_tasks.get(room_code) is task:
+        del room_battle_tasks[room_code]
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logger.info("Background battle task for room %s was cancelled.", room_code)
+    except Exception:
+        logger.exception("Background battle task for room %s crashed unexpectedly.", room_code)
+
+
+async def run_room_battle_generation(room_code: str) -> None:
+    try:
+        snapshot = room_service.battle_generation_snapshot(room_code)
+    except (RoomNotFoundError, RoomNotReadyError) as exc:
+        logger.info("Skipping battle generation for room %s: %s", room_code, exc)
+        return
+
+    try:
+        autoplay = await asyncio.to_thread(room_service.generate_autoplay_for_snapshot, snapshot)
+    except Exception as exc:
+        room = room_service.fail_battle_generation(room_code, exc)
+    else:
+        room = room_service.complete_battle_generation(room_code, autoplay)
+
+    if room is not None:
+        await room_hub.broadcast_snapshot(room)
 
 # Local frontend dev runs on Vite, so allow those origins during development.
 app.add_middleware(
@@ -240,7 +330,7 @@ def abandon_game_keepalive(game_id: str) -> dict[str, str]:
 @app.post("/games/{game_id}/actions", response_model=ApiResponse)
 async def apply_action(game_id: str, request: ActionRequest) -> ApiResponse:
     try:
-        game = service.apply_action(game_id, request)
+        game = service.apply_action(game_id, request, finalize_autoplay=False)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuleViolation as exc:
@@ -253,13 +343,15 @@ async def apply_action(game_id: str, request: ActionRequest) -> ApiResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EXPECTED_ENGINE_FAILURES as exc:
         raise HTTPException(status_code=503, detail=format_engine_failure(exc)) from exc
+    if battle_generation_running(game.phase, game.autoplay.status):
+        schedule_game_battle_generation(game.game_id)
     return ApiResponse(message="Action applied.", game=game)
 
 
 @app.post("/games/{game_id}/retry-battle", response_model=ApiResponse)
 async def retry_game_battle(game_id: str) -> ApiResponse:
     try:
-        game = service.retry_battle(game_id)
+        game = service.retry_battle(game_id, finalize_autoplay=False)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except BattleRetryError as exc:
@@ -270,6 +362,8 @@ async def retry_game_battle(game_id: str) -> ApiResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EXPECTED_ENGINE_FAILURES as exc:
         raise HTTPException(status_code=503, detail=format_engine_failure(exc)) from exc
+    if battle_generation_running(game.phase, game.autoplay.status):
+        schedule_game_battle_generation(game.game_id)
     return ApiResponse(message="Battle retry applied.", game=game)
 
 
@@ -331,16 +425,17 @@ async def apply_room_action(room_code: str, request: RoomActionRequest) -> RoomR
     if room.game.phase is Phase.READY_FOR_AUTOPLAY:
         room = room_service.begin_autoplay(room_code)
         await room_hub.broadcast_snapshot(room)
-        room = room_service.finalize_autoplay(room_code)
+        schedule_room_battle_generation(room.room_code)
+    elif battle_generation_running(room.game.phase, room.game.autoplay.status):
+        schedule_room_battle_generation(room.room_code)
 
-    await room_hub.broadcast_snapshot(room)
     return room_service.room_response("Room action applied.", room, request.player_token, player_side)
 
 
 @app.post("/rooms/{room_code}/retry-battle", response_model=RoomResponse)
 async def retry_room_battle(room_code: str, request: LeaveRoomRequest) -> RoomResponse:
     try:
-        room, player_side = room_service.retry_battle(room_code, request.player_token)
+        room, player_side = room_service.retry_battle(room_code, request.player_token, finalize_autoplay=False)
     except RoomNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RoomAccessError as exc:
@@ -355,6 +450,8 @@ async def retry_room_battle(room_code: str, request: LeaveRoomRequest) -> RoomRe
         raise HTTPException(status_code=503, detail=format_engine_failure(exc)) from exc
 
     await room_hub.broadcast_snapshot(room)
+    if battle_generation_running(room.game.phase, room.game.autoplay.status):
+        schedule_room_battle_generation(room.room_code)
     return room_service.room_response("Battle retry applied.", room, request.player_token, player_side)
 
 
