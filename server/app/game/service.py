@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import logging
 import random
 from typing import Dict
 
 from app.game.bot import BotMoveError, EasySetupBot
-from app.game.engine import EXPECTED_ENGINE_FAILURES, EngineProvider, LocalStockfishProvider, format_engine_failure
+from app.game.engine import (
+    ENGINE_FAILURE_USER_MESSAGE,
+    EXPECTED_ENGINE_FAILURES,
+    EngineProvider,
+    LocalStockfishProvider,
+    format_engine_failure,
+)
 from app.game.models import (
     ActionRequest,
     AutoplayState,
@@ -21,6 +28,13 @@ from app.game.models import (
 )
 from app.game.presets import build_sample_game_actions
 from app.game.rules import AutomateRulesEngine
+
+
+logger = logging.getLogger(__name__)
+
+
+class BattleRetryError(ValueError):
+    pass
 
 
 class GameService:
@@ -116,6 +130,21 @@ class GameService:
         self._games[game_id] = updated
         return updated
 
+    def retry_battle(self, game_id: str) -> GameState:
+        game = self.get_game(game_id)
+        self._validate_retryable_battle(game)
+
+        working_copy = game.model_copy(deep=True)
+        working_copy.phase = Phase.READY_FOR_AUTOPLAY
+        working_copy.autoplay = AutoplayState(status=AutoplayStatus.NOT_READY)
+        working_copy.result = None
+        working_copy.event_log.append("Retrying battle simulation from the finished setup.")
+
+        updated = self._finalize_post_setup_or_failure(working_copy)
+        self._touch_game(updated)
+        self._games[game_id] = updated
+        return updated
+
     def stats(self) -> dict[str, int]:
         self._cleanup_games()
         active_games = sum(1 for game in self._games.values() if self._is_active_game(game))
@@ -149,11 +178,18 @@ class GameService:
             return self._finalize_post_setup(game)
         except EXPECTED_ENGINE_FAILURES as exc:
             error_message = format_engine_failure(exc)
+            logger.warning("Battle simulation generation failed (%s): %s", exc.__class__.__name__, error_message)
             game.phase = Phase.AUTOPLAY
-            game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=error_message)
+            game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=ENGINE_FAILURE_USER_MESSAGE)
             game.result = None
-            game.event_log.append(f"Battle simulation generation failed: {error_message}")
+            game.event_log.append(f"Battle simulation generation failed: {ENGINE_FAILURE_USER_MESSAGE}")
             return game
+
+    def _validate_retryable_battle(self, game: GameState) -> None:
+        if not (game.white.king_square and game.black.king_square):
+            raise BattleRetryError("Cannot retry battle before both kings are placed.")
+        if game.phase is not Phase.AUTOPLAY or game.autoplay.status is not AutoplayStatus.FAILED:
+            raise BattleRetryError("Battle retry is only available after failed battle generation.")
 
     def _resolve_human_side(self, choice: HumanSideChoice) -> Side:
         if choice is HumanSideChoice.WHITE:

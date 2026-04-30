@@ -1,8 +1,10 @@
+import asyncio
 from datetime import timedelta
 
 import chess.engine
 
-from app.game.engine import EngineUnavailableError
+import app.main as main_module
+from app.game.engine import ENGINE_FAILURE_USER_MESSAGE, EngineUnavailableError
 from app.game.models import (
     ActionRequest,
     ActionType,
@@ -58,6 +60,25 @@ class UnavailableEngineProvider:
 class TerminatedEngineProvider:
     def generate_autoplay(self, game):  # noqa: ANN001
         raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+
+
+class SequencedEngineProvider:
+    def __init__(self, outcomes: list[str]) -> None:
+        self.outcomes = outcomes
+        self.calls = 0
+
+    def generate_autoplay(self, game):  # noqa: ANN001
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if outcome == "terminated":
+            raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+        return AutoplayState(
+            status=AutoplayStatus.READY,
+            initial_fen="initial-fen",
+            moves=[ReplayMove(ply=1, uci="g1f3", san="Nf3", fen_after="fen-after-1")],
+            final_fen="final-fen",
+            result="1-0",
+        )
 
 
 def _assert_room_snapshot_hides_player_tokens(room) -> None:  # noqa: ANN001
@@ -258,8 +279,7 @@ def test_multiplayer_engine_termination_is_shared_failed_state() -> None:
     assert room.game.black.king_square == "g8"
     assert room.game.phase == "autoplay"
     assert room.game.autoplay.status == "failed"
-    assert "Stockfish crashed during battle generation" in (room.game.autoplay.error or "")
-    assert "exit code: -11" in (room.game.autoplay.error or "")
+    assert room.game.autoplay.error == ENGINE_FAILURE_USER_MESSAGE
     assert service.stats() == {"active_games": 1, "players_online": 2, "occupied_players": 2, "total_battles_played": 0}
 
     white_view = service.get_room(created.room.room_code, created.player_token)
@@ -267,6 +287,71 @@ def test_multiplayer_engine_termination_is_shared_failed_state() -> None:
 
     assert white_view.room.game.autoplay.status == "failed"
     assert black_view.room.game.autoplay.status == "failed"
+
+
+def test_multiplayer_retry_battle_succeeds_from_failed_state() -> None:
+    engine_provider = SequencedEngineProvider(["terminated", "ready"])
+    service = RoomService(engine_provider=engine_provider)
+    created = service.create_room(CreateRoomRequest())
+    joined = service.join_room(JoinRoomRequest(room_code=created.room.room_code))
+    service.mark_connected(created.room.room_code, created.player_token, True)
+    service.mark_connected(created.room.room_code, joined.player_token, True)
+
+    for action in _build_ready_sequence():
+        token = created.player_token if action.side == "white" else joined.player_token
+        room = service.apply_action(
+            created.room.room_code,
+            RoomActionRequest(player_token=token, action=action),
+        )
+
+    assert room.game.autoplay.status == "failed"
+
+    retried, player_side = service.retry_battle(created.room.room_code, created.player_token)
+
+    assert player_side == "white"
+    assert engine_provider.calls == 2
+    assert retried.game.autoplay.status == "ready"
+    assert retried.game.white.king_square == "g1"
+    assert retried.game.black.king_square == "g8"
+    assert service.stats() == {"active_games": 1, "players_online": 2, "occupied_players": 2, "total_battles_played": 1}
+
+
+def test_multiplayer_retry_endpoint_broadcasts_updated_state(monkeypatch) -> None:  # noqa: ANN001
+    engine_provider = SequencedEngineProvider(["terminated", "ready"])
+    patched_service = RoomService(engine_provider=engine_provider)
+    monkeypatch.setattr(main_module, "room_service", patched_service)
+
+    class FakeHub:
+        def __init__(self) -> None:
+            self.snapshots = []
+
+        async def broadcast_snapshot(self, room):  # noqa: ANN001
+            self.snapshots.append(room)
+
+    fake_hub = FakeHub()
+    monkeypatch.setattr(main_module, "room_hub", fake_hub)
+    created = patched_service.create_room(CreateRoomRequest())
+    joined = patched_service.join_room(JoinRoomRequest(room_code=created.room.room_code))
+    patched_service.mark_connected(created.room.room_code, created.player_token, True)
+    patched_service.mark_connected(created.room.room_code, joined.player_token, True)
+
+    for action in _build_ready_sequence():
+        token = created.player_token if action.side == "white" else joined.player_token
+        patched_service.apply_action(
+            created.room.room_code,
+            RoomActionRequest(player_token=token, action=action),
+        )
+
+    response = asyncio.run(
+        main_module.retry_room_battle(
+            created.room.room_code,
+            LeaveRoomRequest(player_token=created.player_token),
+        )
+    )
+
+    assert response.room.game.autoplay.status == "ready"
+    assert fake_hub.snapshots[-1].game.autoplay.status == "ready"
+    assert patched_service.stats()["total_battles_played"] == 1
 
 
 def test_room_snapshots_only_include_current_player_token_at_top_level() -> None:
@@ -421,7 +506,7 @@ def test_multiplayer_autoplay_failure_is_shared_failed_state() -> None:
     room = service.finalize_autoplay(created.room.room_code)
     assert room.game.phase == "autoplay"
     assert room.game.autoplay.status == "failed"
-    assert "Stockfish missing" in (room.game.autoplay.error or "")
+    assert room.game.autoplay.error == ENGINE_FAILURE_USER_MESSAGE
 
     white_view = service.get_room(created.room.room_code, created.player_token)
     black_view = service.get_room(created.room.room_code, joined.player_token)

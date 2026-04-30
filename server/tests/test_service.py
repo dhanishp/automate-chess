@@ -1,8 +1,10 @@
+import asyncio
 from datetime import timedelta
 
 import chess.engine
 
-from app.game.engine import EngineUnavailableError
+import app.main as main_module
+from app.game.engine import ENGINE_FAILURE_USER_MESSAGE, EngineUnavailableError
 from app.game.models import (
     ActionRequest,
     ActionType,
@@ -19,7 +21,7 @@ from app.game.models import (
     Side,
     utc_now,
 )
-from app.game.service import GameService
+from app.game.service import BattleRetryError, GameService
 from app.main import compose_stats
 
 
@@ -69,6 +71,25 @@ class UnavailableEngineProvider:
 class TerminatedEngineProvider:
     def generate_autoplay(self, game):  # noqa: ANN001
         raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+
+
+class SequencedEngineProvider:
+    def __init__(self, outcomes: list[str]) -> None:
+        self.outcomes = outcomes
+        self.calls = 0
+
+    def generate_autoplay(self, game):  # noqa: ANN001
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if outcome == "terminated":
+            raise chess.engine.EngineTerminatedError("engine process died unexpectedly (exit code: -11)")
+        return AutoplayState(
+            status=AutoplayStatus.READY,
+            initial_fen="initial-fen",
+            moves=[ReplayMove(ply=1, uci="g1f3", san="Nf3", fen_after="fen-after-1")],
+            final_fen="final-fen",
+            result="1-0",
+        )
 
 
 def test_finished_setup_generates_autoplay_data() -> None:
@@ -220,7 +241,7 @@ def test_engine_unavailable_does_not_store_half_completed_autoplay_state() -> No
     assert persisted.phase == "autoplay"
     assert persisted.black.king_square == "g8"
     assert persisted.autoplay.status == "failed"
-    assert "Stockfish missing" in (persisted.autoplay.error or "")
+    assert persisted.autoplay.error == ENGINE_FAILURE_USER_MESSAGE
 
 
 def test_bot_completed_side_is_skipped_before_human_final_king() -> None:
@@ -265,7 +286,7 @@ def test_bot_final_king_engine_failure_persists_king_and_failed_state() -> None:
     assert persisted.black.king_square == "g8"
     assert persisted.phase == Phase.AUTOPLAY
     assert persisted.autoplay.status == AutoplayStatus.FAILED
-    assert "Stockfish missing" in (persisted.autoplay.error or "")
+    assert persisted.autoplay.error == ENGINE_FAILURE_USER_MESSAGE
 
 
 def test_bot_final_king_engine_termination_persists_failed_state() -> None:
@@ -288,9 +309,89 @@ def test_bot_final_king_engine_termination_persists_failed_state() -> None:
     assert persisted.black.king_square == "g8"
     assert persisted.phase == Phase.AUTOPLAY
     assert persisted.autoplay.status == AutoplayStatus.FAILED
-    assert "Stockfish crashed during battle generation" in (persisted.autoplay.error or "")
-    assert "exit code: -11" in (persisted.autoplay.error or "")
+    assert persisted.autoplay.error == ENGINE_FAILURE_USER_MESSAGE
     assert service.stats() == {"active_games": 1, "active_players": 1, "total_battles_played": 0}
+
+
+def test_retry_battle_succeeds_from_failed_state() -> None:
+    engine_provider = SequencedEngineProvider(["terminated", "ready"])
+    service = GameService(engine_provider=engine_provider)
+    game = service.create_solo_game(CreateSoloGameRequest())
+
+    for action in _build_ready_sequence():
+        game = service.apply_action(game.game_id, action)
+
+    assert game.autoplay.status == AutoplayStatus.FAILED
+    assert service.stats() == {"active_games": 1, "active_players": 1, "total_battles_played": 0}
+
+    retried = service.retry_battle(game.game_id)
+
+    assert engine_provider.calls == 2
+    assert retried.phase == Phase.AUTOPLAY
+    assert retried.autoplay.status == AutoplayStatus.READY
+    assert retried.white.king_square == "g1"
+    assert retried.black.king_square == "g8"
+    assert service.stats() == {"active_games": 1, "active_players": 1, "total_battles_played": 1}
+
+
+def test_retry_battle_keeps_failed_state_if_retry_fails() -> None:
+    engine_provider = SequencedEngineProvider(["terminated", "terminated"])
+    service = GameService(engine_provider=engine_provider)
+    game = service.create_solo_game(CreateSoloGameRequest())
+
+    for action in _build_ready_sequence():
+        game = service.apply_action(game.game_id, action)
+
+    retried = service.retry_battle(game.game_id)
+
+    assert engine_provider.calls == 2
+    assert retried.phase == Phase.AUTOPLAY
+    assert retried.autoplay.status == AutoplayStatus.FAILED
+    assert retried.autoplay.error == ENGINE_FAILURE_USER_MESSAGE
+    assert retried.black.king_square == "g8"
+    assert service.stats() == {"active_games": 1, "active_players": 1, "total_battles_played": 0}
+
+
+def test_retry_battle_rejects_incomplete_setup() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+    game = service.create_solo_game(CreateSoloGameRequest())
+
+    try:
+        service.retry_battle(game.game_id)
+    except BattleRetryError as exc:
+        assert "both kings" in str(exc)
+    else:
+        raise AssertionError("Expected retry to reject incomplete setup.")
+
+
+def test_retry_battle_rejects_non_failed_battle() -> None:
+    service = GameService(engine_provider=FakeEngineProvider())
+    game = service.create_solo_game(CreateSoloGameRequest())
+
+    for action in _build_ready_sequence():
+        game = service.apply_action(game.game_id, action)
+
+    try:
+        service.retry_battle(game.game_id)
+    except BattleRetryError as exc:
+        assert "failed battle generation" in str(exc)
+    else:
+        raise AssertionError("Expected retry to reject non-failed battle.")
+
+
+def test_retry_battle_endpoint_returns_updated_game(monkeypatch) -> None:  # noqa: ANN001
+    engine_provider = SequencedEngineProvider(["terminated", "ready"])
+    patched_service = GameService(engine_provider=engine_provider)
+    monkeypatch.setattr(main_module, "service", patched_service)
+    game = patched_service.create_solo_game(CreateSoloGameRequest())
+
+    for action in _build_ready_sequence():
+        game = patched_service.apply_action(game.game_id, action)
+
+    response = asyncio.run(main_module.retry_game_battle(game.game_id))
+
+    assert response.game.autoplay.status == AutoplayStatus.READY
+    assert patched_service.stats()["total_battles_played"] == 1
 
 
 def test_idle_solo_game_expires_from_stats() -> None:

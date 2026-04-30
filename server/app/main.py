@@ -38,7 +38,7 @@ from app.game.models import (
 from app.game.presets import PresetNotFoundError
 from app.game.rooms import RoomAccessError, RoomJoinError, RoomNotFoundError, RoomNotReadyError, RoomService
 from app.game.rules import RuleViolation
-from app.game.service import service
+from app.game.service import BattleRetryError, service
 
 room_service = RoomService()
 stockfish_provider = LocalStockfishProvider()
@@ -256,6 +256,23 @@ async def apply_action(game_id: str, request: ActionRequest) -> ApiResponse:
     return ApiResponse(message="Action applied.", game=game)
 
 
+@app.post("/games/{game_id}/retry-battle", response_model=ApiResponse)
+async def retry_game_battle(game_id: str) -> ApiResponse:
+    try:
+        game = service.retry_battle(game_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BattleRetryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except EngineUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EngineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EXPECTED_ENGINE_FAILURES as exc:
+        raise HTTPException(status_code=503, detail=format_engine_failure(exc)) from exc
+    return ApiResponse(message="Battle retry applied.", game=game)
+
+
 @app.post("/rooms", response_model=RoomResponse)
 async def create_room(request: CreateRoomRequest) -> RoomResponse:
     response = room_service.create_room(request)
@@ -318,6 +335,27 @@ async def apply_room_action(room_code: str, request: RoomActionRequest) -> RoomR
 
     await room_hub.broadcast_snapshot(room)
     return room_service.room_response("Room action applied.", room, request.player_token, player_side)
+
+
+@app.post("/rooms/{room_code}/retry-battle", response_model=RoomResponse)
+async def retry_room_battle(room_code: str, request: LeaveRoomRequest) -> RoomResponse:
+    try:
+        room, player_side = room_service.retry_battle(room_code, request.player_token)
+    except RoomNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RoomAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RoomNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except EngineUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EngineError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EXPECTED_ENGINE_FAILURES as exc:
+        raise HTTPException(status_code=503, detail=format_engine_failure(exc)) from exc
+
+    await room_hub.broadcast_snapshot(room)
+    return room_service.room_response("Battle retry applied.", room, request.player_token, player_side)
 
 
 @app.post("/rooms/{room_code}/leave")

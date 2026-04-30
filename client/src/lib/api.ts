@@ -360,6 +360,12 @@ export function applyAction(gameId: string, payload: ActionRequest): Promise<Api
   })
 }
 
+export function retryBattle(gameId: string): Promise<ApiResponse> {
+  return request<ApiResponse>(`/games/${gameId}/retry-battle`, {
+    method: 'POST',
+  })
+}
+
 export function createRoom(payload: CreateRoomRequest = {}): Promise<RoomResponse> {
   return request<RoomResponse>('/rooms', {
     method: 'POST',
@@ -381,6 +387,13 @@ export function getRoom(roomCode: string, playerToken: string): Promise<RoomResp
 
 export function applyRoomAction(roomCode: string, payload: RoomActionRequest): Promise<RoomResponse> {
   return request<RoomResponse>(`/rooms/${roomCode}/actions`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function retryRoomBattle(roomCode: string, payload: LeaveRoomRequest): Promise<RoomResponse> {
+  return request<RoomResponse>(`/rooms/${roomCode}/retry-battle`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })

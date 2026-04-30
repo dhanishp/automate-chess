@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import glob
 import logging
 import os
@@ -21,7 +22,8 @@ class EngineUnavailableError(EngineError):
     pass
 
 
-EXPECTED_ENGINE_FAILURES = (EngineError, chess.engine.EngineError, TimeoutError, OSError)
+ENGINE_FAILURE_USER_MESSAGE = "The chess engine crashed while resolving the battle. Try again or return to menu."
+EXPECTED_ENGINE_FAILURES = (EngineError, chess.engine.EngineError, TimeoutError, asyncio.TimeoutError, OSError)
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,14 @@ def format_engine_failure(exc: BaseException) -> str:
         return f"Stockfish timed out during battle generation: {exc}"
     message = str(exc)
     return message if message else exc.__class__.__name__
+
+
+def _diagnostic_engine_failure(exc: BaseException) -> BaseException:
+    cause = exc.__cause__
+    while cause is not None:
+        exc = cause
+        cause = exc.__cause__
+    return exc
 
 
 class EngineProvider(Protocol):
@@ -47,6 +57,7 @@ class EngineConfig:
     hash_mb: int = 64
     skill_level: int | None = None
     max_plies: int = 400
+    max_attempts: int = 3
 
     @classmethod
     def from_env(cls) -> "EngineConfig":
@@ -57,6 +68,7 @@ class EngineConfig:
             hash_mb=int(os.getenv("STOCKFISH_HASH_MB", "64")),
             skill_level=int(os.getenv("STOCKFISH_SKILL_LEVEL")) if os.getenv("STOCKFISH_SKILL_LEVEL") else None,
             max_plies=int(os.getenv("STOCKFISH_MAX_PLIES", "400")),
+            max_attempts=max(1, min(int(os.getenv("STOCKFISH_MAX_ATTEMPTS", "3")), 5)),
         )
 
 
@@ -166,9 +178,34 @@ class LocalStockfishProvider:
 
     def generate_autoplay(self, game: GameState) -> AutoplayState:
         stockfish_path = self._resolve_stockfish_path()
+        max_attempts = max(1, min(self._config.max_attempts, 5))
+        last_failure: BaseException | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return self._generate_autoplay_once(game, stockfish_path, attempt)
+            except EXPECTED_ENGINE_FAILURES as exc:
+                last_failure = exc
+                retrying = attempt < max_attempts
+                diagnostic_exc = _diagnostic_engine_failure(exc)
+                logger.warning(
+                    "Stockfish battle generation attempt %s/%s failed (%s): %s; %s",
+                    attempt,
+                    max_attempts,
+                    diagnostic_exc.__class__.__name__,
+                    str(diagnostic_exc),
+                    "retrying with a fresh process" if retrying else "giving up",
+                )
+                if not retrying:
+                    break
+
+        raise EngineError(ENGINE_FAILURE_USER_MESSAGE) from last_failure
+
+    def _generate_autoplay_once(self, game: GameState, stockfish_path: str, attempt: int) -> AutoplayState:
         board = board_from_game(game)
         initial_fen = board.fen()
         replay = AutoplayState(status=AutoplayStatus.RUNNING, initial_fen=initial_fen)
+        engine: chess.engine.SimpleEngine | None = None
 
         try:
             engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
@@ -197,15 +234,18 @@ class LocalStockfishProvider:
         except (TimeoutError, OSError) as exc:
             raise EngineError(format_engine_failure(exc)) from exc
 
+        movetime_ms = self._attempt_movetime_ms(attempt)
+        max_plies = self._attempt_max_plies(attempt)
+
         try:
-            for ply in range(1, self._config.max_plies + 1):
+            for ply in range(1, max_plies + 1):
                 if board.is_game_over():
                     break
 
                 try:
                     result = engine.play(
                         board,
-                        chess.engine.Limit(time=self._config.movetime_ms / 1000),
+                        chess.engine.Limit(time=movetime_ms / 1000),
                     )
                 except EXPECTED_ENGINE_FAILURES as exc:
                     raise EngineError(format_engine_failure(exc)) from exc
@@ -224,7 +264,8 @@ class LocalStockfishProvider:
                     )
                 )
         finally:
-            self._quit_engine_safely(engine, "battle generation")
+            if engine is not None:
+                self._quit_engine_safely(engine, f"battle generation attempt {attempt}")
 
         outcome = board.outcome()
         result_text = outcome.result() if outcome else board.result(claim_draw=True)
@@ -233,6 +274,18 @@ class LocalStockfishProvider:
         replay.final_fen = board.fen()
         replay.result = result_text
         return replay
+
+    def _attempt_movetime_ms(self, attempt: int) -> int:
+        if attempt <= 1:
+            return self._config.movetime_ms
+        if attempt == 2:
+            return max(50, int(self._config.movetime_ms * 0.75))
+        return max(50, int(self._config.movetime_ms * 0.5))
+
+    def _attempt_max_plies(self, attempt: int) -> int:
+        if attempt <= 2:
+            return self._config.max_plies
+        return min(self._config.max_plies, 240)
 
     def _resolve_stockfish_path(self) -> str:
         candidates = []

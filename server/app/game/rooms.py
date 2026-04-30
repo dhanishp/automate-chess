@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import logging
 import random
 from typing import Dict
 from uuid import uuid4
 
-from app.game.engine import EXPECTED_ENGINE_FAILURES, EngineProvider, LocalStockfishProvider, format_engine_failure
+from app.game.engine import (
+    ENGINE_FAILURE_USER_MESSAGE,
+    EXPECTED_ENGINE_FAILURES,
+    EngineProvider,
+    LocalStockfishProvider,
+    format_engine_failure,
+)
 from app.game.models import (
     AutoplayState,
     AutoplayStatus,
@@ -31,6 +38,7 @@ from app.game.rules import AutomateRulesEngine
 
 
 ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+logger = logging.getLogger(__name__)
 
 
 class RoomNotFoundError(KeyError):
@@ -205,6 +213,21 @@ class RoomService:
         self._touch_room(room)
         return room
 
+    def retry_battle(self, room_code: str, player_token: str) -> tuple[RoomState, Side]:
+        self._cleanup_rooms()
+        room = self._get_room(room_code)
+        side = self._side_for_token(room, player_token)
+        self._validate_retryable_battle(room.game)
+
+        room.game.phase = Phase.READY_FOR_AUTOPLAY
+        room.game.autoplay = AutoplayState(status=AutoplayStatus.NOT_READY)
+        room.game.result = None
+        room.game.event_log.append("Retrying battle simulation from the finished setup.")
+        room.game = self._finalize_post_setup_or_failure(room.game)
+        self._update_room_status(room)
+        self._touch_room(room)
+        return room, side
+
     def public_room(self, room: RoomState) -> RoomSnapshot:
         return RoomSnapshot(
             room_code=room.room_code,
@@ -290,14 +313,25 @@ class RoomService:
         try:
             return self._finalize_post_setup(game)
         except EXPECTED_ENGINE_FAILURES as exc:
+            logger.warning(
+                "Multiplayer battle simulation generation failed (%s): %s",
+                exc.__class__.__name__,
+                format_engine_failure(exc),
+            )
             return self._mark_autoplay_failed(game, format_engine_failure(exc))
 
     def _mark_autoplay_failed(self, game: GameState, error: str) -> GameState:
         game.phase = Phase.AUTOPLAY
-        game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=error)
+        game.autoplay = AutoplayState(status=AutoplayStatus.FAILED, error=ENGINE_FAILURE_USER_MESSAGE)
         game.result = None
-        game.event_log.append(f"Battle simulation generation failed: {error}")
+        game.event_log.append(f"Battle simulation generation failed: {ENGINE_FAILURE_USER_MESSAGE}")
         return game
+
+    def _validate_retryable_battle(self, game: GameState) -> None:
+        if not (game.white.king_square and game.black.king_square):
+            raise RoomNotReadyError("Cannot retry battle before both kings are placed.")
+        if game.phase is not Phase.AUTOPLAY or game.autoplay.status is not AutoplayStatus.FAILED:
+            raise RoomNotReadyError("Battle retry is only available after failed battle generation.")
 
     def _touch_room(self, room: RoomState) -> None:
         room.version += 1

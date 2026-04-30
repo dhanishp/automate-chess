@@ -275,13 +275,23 @@ select {
 }
 
 .pill.total-battles-pill {
-  color: var(--amber-strong);
-  border-color: rgba(242, 186, 107, 0.22);
-  background: rgba(242, 186, 107, 0.055);
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  border-color: color-mix(in srgb, var(--line-strong) 82%, transparent);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .pill.total-battles-pill .pill-dot {
-  background: var(--amber);
+  background: color-mix(in srgb, var(--muted) 72%, var(--text));
+}
+
+:root[data-theme='light'] .pill.total-battles-pill {
+  color: #2f2a23;
+  border-color: rgba(49, 42, 35, 0.16);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+:root[data-theme='light'] .pill.total-battles-pill .pill-dot {
+  background: #746b5f;
 }
 
 .pill.room-pill {

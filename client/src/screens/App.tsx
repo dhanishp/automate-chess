@@ -20,6 +20,8 @@ import {
   getWebSocketUrl,
   joinRoom,
   leaveRoom,
+  retryBattle,
+  retryRoomBattle,
   warmupEngine,
   type GameMode,
   type GameState,
@@ -39,6 +41,7 @@ const SESSION_STORAGE_GAME_KEY = 'automate-chess-game-id'
 const ROOM_SESSION_STORAGE_KEY = 'automate-chess-room-session'
 const THEME_STORAGE_KEY = 'automate-chess-theme'
 const BOT_THINK_DELAY_MS = 700
+const FAILED_BATTLE_MESSAGE = 'The chess engine crashed while resolving the battle. Try again or return to menu.'
 const PIECE_LABELS: Record<PieceType, string> = {
   P: 'Pawn',
   N: 'Knight',
@@ -439,6 +442,7 @@ export function App() {
   const [loadingMessage, setLoadingMessage] = useState('Loading saved game...')
   const [pendingActionLabel, setPendingActionLabel] = useState<string | null>(null)
   const [isCalculatingAutoplay, setIsCalculatingAutoplay] = useState(false)
+  const [isRetryingBattle, setIsRetryingBattle] = useState(false)
   const [autoplayTransitionLatched, setAutoplayTransitionLatched] = useState(false)
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
   const [serverStats, setServerStats] = useState<StatsResponse | null>(null)
@@ -740,6 +744,7 @@ export function App() {
     setLoadingMessage('')
     setPendingActionLabel(null)
     setIsCalculatingAutoplay(false)
+    setIsRetryingBattle(false)
     setAutoplayTransitionLatched(false)
     setInviteLinkCopied(false)
     setOpenRoomsLoading(false)
@@ -980,6 +985,40 @@ export function App() {
     }
   }
 
+  async function retryBattleGeneration() {
+    if (!game || actionInFlightRef.current || game.autoplay.status !== 'failed') {
+      return
+    }
+
+    actionInFlightRef.current = true
+    setIsRetryingBattle(true)
+    setAutoplayTransitionLatched(true)
+    setPendingActionLabel('Retrying battle generation...')
+    setErrorMessage(null)
+
+    try {
+      if (isMultiplayer && roomSession && roomState) {
+        const response = await retryRoomBattle(roomState.room_code, {
+          player_token: roomSession.playerToken,
+        })
+        setRoomState(response.room)
+        setGame(response.room.game)
+        await (syncRoomStateRef.current?.() ?? Promise.resolve())
+      } else {
+        const response = await retryBattle(game.game_id)
+        setGame(response.game)
+      }
+    } catch {
+      setErrorMessage(FAILED_BATTLE_MESSAGE)
+      await refetchLatestGameStateAfterAction().catch(() => null)
+    } finally {
+      setPendingActionLabel(null)
+      setIsRetryingBattle(false)
+      setIsCalculatingAutoplay(false)
+      actionInFlightRef.current = false
+    }
+  }
+
   async function refreshOpenRooms() {
     if (game) {
       return
@@ -1055,6 +1094,7 @@ export function App() {
       black: 'P',
     })
     setIsCalculatingAutoplay(false)
+    setIsRetryingBattle(false)
     setAutoplayTransitionLatched(false)
     setInviteLinkCopied(false)
     setReplayFinished(false)
@@ -1104,6 +1144,7 @@ export function App() {
       black: 'P',
     })
     setIsCalculatingAutoplay(false)
+    setIsRetryingBattle(false)
     setAutoplayTransitionLatched(false)
     setInviteLinkCopied(false)
     setReplayFinished(false)
@@ -1155,6 +1196,7 @@ export function App() {
       black: 'P',
     })
     setIsCalculatingAutoplay(false)
+    setIsRetryingBattle(false)
     setAutoplayTransitionLatched(false)
     setInviteLinkCopied(false)
     setReplayFinished(false)
@@ -1200,6 +1242,7 @@ export function App() {
       black: 'P',
     })
     setIsCalculatingAutoplay(false)
+    setIsRetryingBattle(false)
     setAutoplayTransitionLatched(false)
     setInviteLinkCopied(false)
     setReplayFinished(false)
@@ -1832,11 +1875,12 @@ export function App() {
   const autoplayPhase = game.phase === 'autoplay'
   const sharedCalculatingState = shouldLatchCalculatingOverlay(game)
   const showCalculatingOverlay =
-    !isAutoplayTerminal(game) &&
-    (
-      autoplayTransitionLatched ||
-      (isMultiplayer ? sharedCalculatingState : isCalculatingAutoplay || sharedCalculatingState)
-    )
+    isRetryingBattle ||
+    (!isAutoplayTerminal(game) &&
+      (
+        autoplayTransitionLatched ||
+        (isMultiplayer ? sharedCalculatingState : isCalculatingAutoplay || sharedCalculatingState)
+      ))
   const headerTone = getHeaderTone(game)
   const roomConnectionPill = isMultiplayer && roomState
     ? `Room ${roomState.room_code} · ${roomConnectionState}`
@@ -2036,17 +2080,21 @@ export function App() {
   }
 
   if (autoplayPhase) {
+    const battleFailed = game.autoplay.status === 'failed'
     const autoplayHeadline =
-      game.autoplay.status === 'failed'
+      battleFailed
         ? 'Battle generation failed'
         : game.autoplay.status === 'running'
           ? 'Generating battle simulation'
           : 'Battle simulation pending'
     const autoplayMessage =
-      game.autoplay.error ??
-      (game.autoplay.status === 'running'
-        ? 'Stockfish is simulating the battle from the finished setup.'
-        : 'The setup is locked. Battle data is not ready yet.')
+      battleFailed
+        ? FAILED_BATTLE_MESSAGE
+        : game.autoplay.error ?? (
+          game.autoplay.status === 'running'
+            ? 'Stockfish is simulating the battle from the finished setup.'
+            : 'The setup is locked. Battle data is not ready yet.'
+        )
 
     return (
       <div className="shell">
@@ -2094,24 +2142,37 @@ export function App() {
                         <h3>{autoplayHeadline}</h3>
                         <p>{autoplayMessage}</p>
                       </div>
-                      <button
-                        type="button"
-                        className="button primary"
-                        onClick={() => {
-                          void refreshGame()
-                        }}
-                      >
-                        Refresh battle state
-                      </button>
-                      {game.autoplay.status === 'failed' ? (
+                      {battleFailed ? (
+                        <>
+                          <button
+                            type="button"
+                            className="button primary"
+                            disabled={pendingActionLabel !== null || actionInFlightRef.current}
+                            onClick={() => {
+                              void retryBattleGeneration()
+                            }}
+                          >
+                            Retry battle
+                          </button>
+                          <button
+                            type="button"
+                            className="button ghost"
+                            onClick={requestBackToMenu}
+                          >
+                            Back to menu
+                          </button>
+                        </>
+                      ) : (
                         <button
                           type="button"
-                          className="button ghost"
-                          onClick={requestBackToMenu}
+                          className="button primary"
+                          onClick={() => {
+                            void refreshGame()
+                          }}
                         >
-                          Back to menu
+                          Refresh battle state
                         </button>
-                      ) : null}
+                      )}
                     </section>
                   </div>
                 </div>
