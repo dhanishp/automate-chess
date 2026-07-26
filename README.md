@@ -2,7 +2,7 @@
 
 # Try it out live: https://automate-chess.onrender.com
 
-Browser-based Automate-style chess for the Handshake Codex Challenge.
+Browser-based Automate-style chess.
 
 Players build custom chess formations with a points budget, place kings last, and then watch Stockfish play out the resulting battle simulation.
 
